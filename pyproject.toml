@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "jules-panel"
 version = "0.1.0"
@@ -13,6 +17,16 @@ dependencies = [
 
 [project.scripts]
 jules-panel = "panel.app:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["panel*"]
+exclude = ["systemd*", "scripts*", "tests*", "docs*"]
+
+[tool.setuptools.package-data]
+panel = ["templates/**/*"]
 
 [tool.ruff]
 line-length = 100
