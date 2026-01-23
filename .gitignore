@@ -21,6 +21,7 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
 venv/
 ENV/
 env/
@@ -31,6 +32,11 @@ env/
 *.swp
 *.swo
 *~
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
 
 # OS
 .DS_Store
