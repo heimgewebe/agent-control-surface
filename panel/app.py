@@ -102,6 +102,9 @@ def api_patch_apply(req: ApplyPatchReq) -> str:
         apply_cmd.append("--3way")
     apply_cmd.append("-")
     out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+    if out.code != 0:
+        # Patch passed --check but failed to apply; treat as conflict/state issue.
+        raise HTTPException(status_code=409, detail=combine_output(out))
     return combine_output(out)
 
 
