@@ -163,6 +163,10 @@ def api_git_pr_prepare(repo: str = Query(...)) -> str:
     )
 
 
+# NOTE on error handling:
+# - /api/patch/apply is transactional: it must not return 200 if nothing changed.
+# - Other git endpoints currently expose stdout/stderr as part of an interactive wizard flow.
+#   A future PR can normalize this into structured responses + non-2xx statuses.
 def combine_output(result: Any) -> str:
     output = result.stdout or ""
     if result.stderr:
