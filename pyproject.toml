@@ -19,11 +19,14 @@ dependencies = [
 jules-panel = "panel.app:main"
 
 [tool.setuptools]
-include-package-data = false
+include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["panel*"]
 exclude = ["systemd*", "scripts*", "tests*", "docs*"]
+
+[tool.setuptools.package-data]
+panel = ["templates/**/*"]
 
 [tool.ruff]
 line-length = 100
