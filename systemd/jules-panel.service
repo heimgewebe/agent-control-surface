@@ -1,0 +1,13 @@
+[Unit]
+Description=jules-panel (local-only)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/heimgewebe/jules-panel
+ExecStart=%h/repos/heimgewebe/jules-panel/.venv/bin/uvicorn panel.app:app --host 127.0.0.1 --port 8099
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
