@@ -44,6 +44,8 @@ uvicorn panel.app:app --host 127.0.0.1 --port 8099
 
 Die Unit liegt in `systemd/jules-panel.service` und startet das Panel lokal auf `127.0.0.1:8099`.
 
+**Annahme:** Die `.venv` liegt in `~/repos/heimgewebe/jules-panel/.venv` und `jules` ist im PATH des systemd-Users verfügbar (z.B. via `~/.local/bin`). Bei Änderungen am venv-Pfad muss die ExecStart-Zeile in der Service-Datei angepasst werden.
+
 ## iPad Zugriff via SSH-Tunnel (Blink Beispiel)
 
 In der Blink-SSH-Config:
