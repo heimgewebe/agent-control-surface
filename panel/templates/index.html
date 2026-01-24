@@ -55,6 +55,19 @@
         font-size: 14px;
         opacity: 0.8;
       }
+      .status {
+        font-weight: 600;
+        margin-top: 8px;
+      }
+      .status.success {
+        color: #2e7d32;
+      }
+      .status.warn {
+        color: #b36b00;
+      }
+      .status.error {
+        color: #c62828;
+      }
     </style>
   </head>
   <body>
@@ -99,8 +112,12 @@
         </label>
       </div>
       <div class="row">
+        <input id="applySessionId" placeholder="Jules Session ID (optional)" style="min-width: 260px" />
+      </div>
+      <div class="row">
         <button onclick="applyPatch()">Apply patch</button>
       </div>
+      <div id="applyStatus" class="status"></div>
       <pre id="applyOut"></pre>
     </section>
 
@@ -164,10 +181,25 @@
       async function applyPatch() {
         const patch = document.getElementById("patch").value;
         const threeWay = document.getElementById("threeWay").checked;
-        document.getElementById("applyOut").textContent = await api(
-          "/api/patch/apply",
-          { repo: repo(), patch, three_way: threeWay },
-        );
+        const sessionId = document.getElementById("applySessionId").value.trim();
+        const body = { repo: repo(), patch, three_way: threeWay };
+        if (sessionId) body.session_id = sessionId;
+        let data = null;
+        try {
+          const res = await fetch("/api/patch/apply?format=json", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          data = await res.json();
+        } catch (error) {
+          setApplyStatus(`❌ Patch fehlgeschlagen: ${error.message}`, "error");
+          document.getElementById("applyOut").textContent = "";
+          return;
+        }
+        const status = formatApplyStatus(data);
+        setApplyStatus(status.text, status.state);
+        document.getElementById("applyOut").textContent = data.details || "";
       }
       async function createBranch() {
         const name = document.getElementById("branch").value.trim();
@@ -207,6 +239,23 @@
       function copyToClipboard(id) {
         const text = document.getElementById(id).textContent;
         navigator.clipboard.writeText(text);
+      }
+      function setApplyStatus(text, state) {
+        const status = document.getElementById("applyStatus");
+        status.textContent = text;
+        status.className = `status ${state || ""}`.trim();
+      }
+      function formatApplyStatus(data) {
+        const filesChanged = data?.meta?.files_changed;
+        if (data.ok && data.changed) {
+          const suffix = filesChanged ? ` (${filesChanged} Dateien geändert)` : "";
+          return { text: `✔ Patch angewendet${suffix}.`, state: "success" };
+        }
+        if (data.ok && !data.changed) {
+          return { text: "⚠ Patch angewendet, aber keine Änderungen.", state: "warn" };
+        }
+        const summary = (data.details || "Unbekannter Fehler").split("\n")[0];
+        return { text: `❌ Patch fehlgeschlagen: ${summary}`, state: "error" };
       }
     </script>
   </body>
