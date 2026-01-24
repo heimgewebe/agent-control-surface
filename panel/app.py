@@ -70,7 +70,7 @@ def api_sessions_new(req: NewSessionReq) -> str:
 @app.get("/api/sessions/{session_id}/diff", response_class=PlainTextResponse)
 def api_session_diff(session_id: str, repo: str = Query(...)) -> str:
     target = get_repo(repo)
-    out = run(["jules", "remote", "diff", "--session", session_id], cwd=target.path, timeout=60)
+    out = run(["jules", "remote", "diff", session_id], cwd=target.path, timeout=60)
     return combine_output(out)
 
 
