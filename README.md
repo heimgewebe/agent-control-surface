@@ -1,4 +1,4 @@
-# agent-control-surface
+# agent-control-surface (acs)
 
 Local-only web UI to drive Jules CLI sessions and a safe, step-by-step Git workflow. This is a control surface (Lenkrad), **not** an autopilot.
 
@@ -51,7 +51,7 @@ Die Unit liegt in `systemd/agent-control-surface.service` und startet das Panel 
 In der Blink-SSH-Config:
 
 ```
-Host julespanel
+Host acs
   HostName 10.7.0.1
   User alex
   LocalForward 8099 127.0.0.1:8099
@@ -64,7 +64,7 @@ Host julespanel
 
 Nutzung:
 
-- `ssh julespanel`
+- `ssh acs`
 - iPad Safari: `http://127.0.0.1:8099`
 
 ## Warnhinweise (Pflicht)
