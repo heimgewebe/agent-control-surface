@@ -185,7 +185,7 @@
         const body = { repo: repo(), patch, three_way: threeWay };
         if (sessionId) body.session_id = sessionId;
         try {
-          const res = await fetch("/api/patch/apply?format=json", {
+          const res = await fetch("/api/patch/apply?response_format=json", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -260,7 +260,7 @@
         status.className = `status ${state || ""}`.trim();
       }
       function formatApplyStatus(data) {
-        const filesChanged = data?.meta?.files_changed;
+        const filesChanged = data?.meta?.files_in_patch;
         if (data.ok && data.changed) {
           const suffix = filesChanged ? ` (${filesChanged} Dateien geändert)` : "";
           return { text: `✔ Patch angewendet${suffix}.`, state: "success" };

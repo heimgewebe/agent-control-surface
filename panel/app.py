@@ -106,7 +106,7 @@ def api_session_diff_download(session_id: str, repo: str = Query(...)) -> PlainT
 
 
 @app.post("/api/patch/apply")
-def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response:
+def api_patch_apply(req: ApplyPatchReq, response_format: str = Query("text")) -> Response:
     try:
         target = get_repo(req.repo)
     except HTTPException as exc:
@@ -119,7 +119,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
             meta=build_patch_meta(req),
         )
         log_action_result(result)
-        return build_action_response(result, format, status_code=exc.status_code)
+        return build_action_response(result, response_format, status_code=exc.status_code)
     branch_guard_error = check_branch_guard(target.path)
     if branch_guard_error:
         result = ActionResult(
@@ -131,7 +131,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
             meta=build_patch_meta(req),
         )
         log_action_result(result)
-        return build_action_response(result, format, status_code=409)
+        return build_action_response(result, response_format, status_code=409)
     result_meta = build_patch_meta(req)
     if not req.patch.strip():
         result = ActionResult(
@@ -143,7 +143,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
             meta=result_meta,
         )
         log_action_result(result)
-        return build_action_response(result, format, status_code=400)
+        return build_action_response(result, response_format, status_code=400)
     try:
         before_diff = git_diff_signature(target.path)
         check_cmd = ["git", "apply", "--check"]
@@ -162,7 +162,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
                 meta=result_meta,
             )
             log_action_result(result)
-            return build_action_response(result, format, status_code=409)
+            return build_action_response(result, response_format, status_code=409)
         apply_cmd = ["git", "apply"]
         if req.three_way:
             apply_cmd.append("--3way")
@@ -180,7 +180,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
                 meta=result_meta,
             )
             log_action_result(result)
-            return build_action_response(result, format, status_code=409)
+            return build_action_response(result, response_format, status_code=409)
         after_diff = git_diff_signature(target.path)
     except Exception as exc:
         result = ActionResult(
@@ -192,7 +192,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
             meta=result_meta,
         )
         log_action_result(result)
-        return build_action_response(result, format, status_code=500)
+        return build_action_response(result, response_format, status_code=500)
     changed = before_diff != after_diff
     details = combine_output(out).strip()
     if not details:
@@ -207,7 +207,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
         meta=result_meta,
     )
     log_action_result(result)
-    return build_action_response(result, format, status_code=200)
+    return build_action_response(result, response_format, status_code=200)
 
 
 @app.post("/api/git/branch", response_class=PlainTextResponse)
@@ -284,7 +284,7 @@ def build_patch_meta(req: ApplyPatchReq) -> dict[str, Any]:
         meta["patch_hash"] = patch_hash
     if files:
         meta["files"] = files
-        meta["files_changed"] = len(files)
+        meta["files_in_patch"] = len(files)
     if req.session_id:
         meta["session_id"] = req.session_id
         meta["source"] = req.source or "jules"
@@ -298,12 +298,13 @@ def extract_patch_files(patch: str) -> set[str]:
     for line in patch.splitlines():
         if not line.startswith("diff --git "):
             continue
-        parts = line.split()
-        if len(parts) < 4:
+        marker = " b/"
+        if marker not in line:
             continue
-        path = parts[3]
-        if path.startswith("b/"):
-            path = path[2:]
+        _, tail = line.split(marker, 1)
+        path = tail.strip()
+        if not path:
+            continue
         files.add(path)
     return files
 
@@ -342,9 +343,9 @@ def git_diff_signature(path: Path) -> str:
 
 
 def format_action_result(result: ActionResult) -> str:
-    files_changed = result.meta.get("files_changed")
+    files_in_patch = result.meta.get("files_in_patch")
     if result.ok and result.changed:
-        suffix = f" ({files_changed} Dateien geändert)" if files_changed else ""
+        suffix = f" ({files_in_patch} Dateien geändert)" if files_in_patch else ""
         status_line = f"✔ Patch angewendet{suffix}."
     elif result.ok and not result.changed:
         status_line = "⚠ Patch angewendet, aber keine Änderungen."
@@ -357,16 +358,19 @@ def format_action_result(result: ActionResult) -> str:
     return f"{status_line}\n\n{details}"
 
 
-def build_action_response(result: ActionResult, format: str, status_code: int) -> Response:
-    if format == "json":
+def build_action_response(
+    result: ActionResult, response_format: str, status_code: int
+) -> Response:
+    if response_format == "json":
         return JSONResponse(result.model_dump(), status_code=status_code)
-    if format != "text":
+    if response_format != "text":
         error = ActionResult(
             ok=False,
             action=result.action,
             repo=result.repo,
-            details=f"Unknown format: {format}",
+            details=f"Unknown format: {response_format}",
             changed=False,
+            meta=result.meta,
         )
         return PlainTextResponse(format_action_result(error), status_code=400)
     return PlainTextResponse(format_action_result(result), status_code=status_code)
