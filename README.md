@@ -94,4 +94,4 @@ Nutzung:
 
 ## Hinweise zur Jules-Diff-CLI
 
-Der Diff-Endpoint nutzt aktuell `jules remote diff --session <id>`. Falls Jules hier einen anderen Subcommand verlangt, wird nur diese Zeile ersetzt.
+Der Diff-Endpoint nutzt aktuell `jules remote pull --session <id>`. Falls Jules hier einen anderen Subcommand verlangt, wird nur diese Zeile ersetzt.
