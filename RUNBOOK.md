@@ -1,11 +1,11 @@
-# jules-panel RUNBOOK (Heimserver)
+# agent-control-surface RUNBOOK (Heimserver)
 
-Dieses Dokument ist die kanonische Betriebsanleitung für jules-panel.
+Dieses Dokument ist die kanonische Betriebsanleitung für agent-control-surface (acs).
 Ziel: reproduzierbar starten, erreichbar machen, Fehler schnell eingrenzen.
 
 ## 0) Voraussetzungen (Checkliste)
 
-- Repo liegt auf dem Heimserver unter: `~/repos/heimgewebe/jules-panel`
+- Repo liegt auf dem Heimserver unter: `~/repos/heimgewebe/agent-control-surface`
 - Python vorhanden: `python3 --version`
 - Jules CLI vorhanden (für Session/Diff): `which jules && jules --help | head`
 - Allowlist-Repos existieren (oder anpassen): siehe `panel/repos.py`
@@ -13,7 +13,7 @@ Ziel: reproduzierbar starten, erreichbar machen, Fehler schnell eingrenzen.
 ## 1) Erstinstallation (Heimserver)
 
 ```bash
-cd ~/repos/heimgewebe/jules-panel
+cd ~/repos/heimgewebe/agent-control-surface
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -29,7 +29,7 @@ python -c "from pathlib import Path; import panel.app as a; p=Path(a.__file__).p
 ## 2) Manuell starten (Debug-Modus)
 
 ```bash
-cd ~/repos/heimgewebe/jules-panel
+cd ~/repos/heimgewebe/agent-control-surface
 source .venv/bin/activate
 python -m uvicorn panel.app:app --host 127.0.0.1 --port 8099
 ```
@@ -43,7 +43,7 @@ curl -sS http://127.0.0.1:8099/ | head
 
 ## 3) Zugriff von Pop!_OS / iPad (SSH-Tunnel)
 
-Wichtig: jules-panel bindet an 127.0.0.1 des Heimservers.
+Wichtig: agent-control-surface bindet an 127.0.0.1 des Heimservers.
 Du musst daher von außen tunneln.
 
 Pop!_OS → Heimserver:
@@ -67,7 +67,7 @@ Wenn du “Connection refused” siehst:
 iPad (Blink) Beispiel-Host:
 
 ```ssh-config
-Host julespanel
+Host acs
   HostName 10.7.0.1
   User alex
   LocalForward 8099 127.0.0.1:8099
@@ -80,13 +80,13 @@ Host julespanel
 
 Nutzung:
 
-- `ssh julespanel`
+- `ssh acs`
 - Safari: http://127.0.0.1:8099
 
 ## 4) Updates nach Merge (Heimserver)
 
 ```bash
-cd ~/repos/heimgewebe/jules-panel
+cd ~/repos/heimgewebe/agent-control-surface
 git pull --ff-only
 source .venv/bin/activate
 pip install -e .
@@ -99,15 +99,15 @@ Wenn uvicorn/systemd läuft: neu starten (siehe unten).
 Installieren:
 
 ```bash
-cd ~/repos/heimgewebe/jules-panel
+cd ~/repos/heimgewebe/agent-control-surface
 ./scripts/install-user-service.sh
 ```
 
 Status/Logs:
 
 ```bash
-systemctl --user status jules-panel.service --no-pager
-journalctl --user -u jules-panel.service -n 200 --no-pager
+systemctl --user status agent-control-surface.service --no-pager
+journalctl --user -u agent-control-surface.service -n 200 --no-pager
 ```
 
 Typischer Stolperstein: jules im PATH (NVM)
