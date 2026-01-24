@@ -262,7 +262,7 @@
       function formatApplyStatus(data) {
         const filesChanged = data?.meta?.files_in_patch;
         if (data.ok && data.changed) {
-          const suffix = filesChanged ? ` (${filesChanged} Dateien geändert)` : "";
+          const suffix = filesChanged ? ` (${filesChanged} Dateien im Patch)` : "";
           return { text: `✔ Patch angewendet${suffix}.`, state: "success" };
         }
         if (data.ok && !data.changed) {

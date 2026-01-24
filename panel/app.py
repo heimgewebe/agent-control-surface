@@ -345,7 +345,7 @@ def git_diff_signature(path: Path) -> str:
 def format_action_result(result: ActionResult) -> str:
     files_in_patch = result.meta.get("files_in_patch")
     if result.ok and result.changed:
-        suffix = f" ({files_in_patch} Dateien geändert)" if files_in_patch else ""
+        suffix = f" ({files_in_patch} Dateien im Patch)" if files_in_patch else ""
         status_line = f"✔ Patch angewendet{suffix}."
     elif result.ok and not result.changed:
         status_line = "⚠ Patch angewendet, aber keine Änderungen."
