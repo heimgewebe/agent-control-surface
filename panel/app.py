@@ -70,8 +70,14 @@ def api_sessions_new(req: NewSessionReq) -> str:
 @app.get("/api/sessions/{session_id}/diff", response_class=PlainTextResponse)
 def api_session_diff(session_id: str, repo: str = Query(...)) -> str:
     target = get_repo(repo)
-    out = run(["jules", "remote", "diff", session_id], cwd=target.path, timeout=60)
-    return combine_output(out)
+    # Jules: `remote pull` prints the patch to stdout. Without `--apply` this is a safe preview.
+    out = run(["jules", "remote", "pull", "--session", session_id], cwd=target.path, timeout=180)
+    if out.code != 0:
+        raise HTTPException(status_code=500, detail=combine_output(out))
+    txt = normalize_patch_output(combine_output(out))
+    if not txt.strip():
+        raise HTTPException(status_code=404, detail="No patch returned for this session.")
+    return txt
 
 
 @app.get("/api/sessions/{session_id}/diff/download", response_class=PlainTextResponse)
@@ -172,6 +178,16 @@ def combine_output(result: Any) -> str:
     if result.stderr:
         output = f"{output}\n{result.stderr}" if output else result.stderr
     return output
+
+
+def normalize_patch_output(output: str) -> str:
+    if not output:
+        return output
+    lines = output.splitlines()
+    for idx, line in enumerate(lines):
+        if line.startswith("diff --git"):
+            return "\n".join(lines[idx:]).strip()
+    return ""
 
 
 def get_repo(key: str) -> Repo:
