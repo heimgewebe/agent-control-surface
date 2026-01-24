@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+from .logging import log_action
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
@@ -26,6 +29,8 @@ class ApplyPatchReq(BaseModel):
     repo: str
     patch: str
     three_way: bool = False
+    session_id: str | None = None
+    source: str | None = None
 
 
 class GitBranchReq(BaseModel):
@@ -40,6 +45,16 @@ class GitCommitReq(BaseModel):
 
 class GitPushReq(BaseModel):
     repo: str
+
+
+class ActionResult(BaseModel):
+    ok: bool
+    action: str
+    repo: str
+    details: str
+    changed: bool
+    stderr: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -90,28 +105,109 @@ def api_session_diff_download(session_id: str, repo: str = Query(...)) -> PlainT
     )
 
 
-@app.post("/api/patch/apply", response_class=PlainTextResponse)
-def api_patch_apply(req: ApplyPatchReq) -> str:
-    target = get_repo(req.repo)
-    assert_branch_guard(target.path)
+@app.post("/api/patch/apply")
+def api_patch_apply(req: ApplyPatchReq, response_format: str = Query("text")) -> Response:
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=req.repo,
+            details=str(exc.detail),
+            changed=False,
+            meta=build_patch_meta(req),
+        )
+        log_action_result(result)
+        return build_action_response(result, response_format, status_code=exc.status_code)
+    branch_guard_error = check_branch_guard(target.path)
+    if branch_guard_error:
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            details=branch_guard_error,
+            changed=False,
+            meta=build_patch_meta(req),
+        )
+        log_action_result(result)
+        return build_action_response(result, response_format, status_code=409)
+    result_meta = build_patch_meta(req)
     if not req.patch.strip():
-        raise HTTPException(status_code=400, detail="Patch is empty")
-    check_cmd = ["git", "apply", "--check"]
-    if req.three_way:
-        check_cmd.append("--3way")
-    check_cmd.append("-")
-    check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-    if check.code != 0:
-        raise HTTPException(status_code=409, detail=combine_output(check))
-    apply_cmd = ["git", "apply"]
-    if req.three_way:
-        apply_cmd.append("--3way")
-    apply_cmd.append("-")
-    out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-    if out.code != 0:
-        # Patch passed --check but failed to apply; treat as conflict/state issue.
-        raise HTTPException(status_code=409, detail=combine_output(out))
-    return combine_output(out)
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            details="Patch is empty",
+            changed=False,
+            meta=result_meta,
+        )
+        log_action_result(result)
+        return build_action_response(result, response_format, status_code=400)
+    try:
+        before_diff = git_diff_signature(target.path)
+        check_cmd = ["git", "apply", "--check"]
+        if req.three_way:
+            check_cmd.append("--3way")
+        check_cmd.append("-")
+        check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if check.code != 0:
+            result = ActionResult(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                details=combine_output(check),
+                changed=False,
+                stderr=check.stderr or None,
+                meta=result_meta,
+            )
+            log_action_result(result)
+            return build_action_response(result, response_format, status_code=409)
+        apply_cmd = ["git", "apply"]
+        if req.three_way:
+            apply_cmd.append("--3way")
+        apply_cmd.append("-")
+        out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if out.code != 0:
+            # Patch passed --check but failed to apply; treat as conflict/state issue.
+            result = ActionResult(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                details=combine_output(out),
+                changed=False,
+                stderr=out.stderr or None,
+                meta=result_meta,
+            )
+            log_action_result(result)
+            return build_action_response(result, response_format, status_code=409)
+        after_diff = git_diff_signature(target.path)
+    except Exception as exc:
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            details=str(exc),
+            changed=False,
+            meta=result_meta,
+        )
+        log_action_result(result)
+        return build_action_response(result, response_format, status_code=500)
+    changed = before_diff != after_diff
+    details = combine_output(out).strip()
+    if not details:
+        details = "Patch applied." if changed else "Patch applied, but no changes."
+    result = ActionResult(
+        ok=True,
+        action="patch.apply",
+        repo=target.key,
+        details=details,
+        changed=changed,
+        stderr=out.stderr or None,
+        meta=result_meta,
+    )
+    log_action_result(result)
+    return build_action_response(result, response_format, status_code=200)
 
 
 @app.post("/api/git/branch", response_class=PlainTextResponse)
@@ -170,7 +266,7 @@ def api_git_pr_prepare(repo: str = Query(...)) -> str:
 
 
 # NOTE on error handling:
-# - /api/patch/apply is transactional: it must not return 200 if nothing changed.
+# - /api/patch/apply returns a structured ActionResult and makes no-ops explicit.
 # - Other git endpoints currently expose stdout/stderr as part of an interactive wizard flow.
 #   A future PR can normalize this into structured responses + non-2xx statuses.
 def combine_output(result: Any) -> str:
@@ -178,6 +274,106 @@ def combine_output(result: Any) -> str:
     if result.stderr:
         output = f"{output}\n{result.stderr}" if output else result.stderr
     return output
+
+
+def build_patch_meta(req: ApplyPatchReq) -> dict[str, Any]:
+    patch_hash = hashlib.sha256(req.patch.encode("utf-8")).hexdigest()
+    files = sorted(extract_patch_files(req.patch))
+    meta: dict[str, Any] = {}
+    if include_patch_hash():
+        meta["patch_hash"] = patch_hash
+    if files:
+        meta["files"] = files
+        meta["files_in_patch"] = len(files)
+    if req.session_id:
+        meta["session_id"] = req.session_id
+        meta["source"] = req.source or "jules"
+    elif req.source:
+        meta["source"] = req.source
+    return meta
+
+
+def extract_patch_files(patch: str) -> set[str]:
+    files: set[str] = set()
+    for line in patch.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        marker = " b/"
+        if marker not in line:
+            continue
+        _, tail = line.split(marker, 1)
+        path = tail.strip()
+        if not path:
+            continue
+        files.add(path)
+    return files
+
+
+def log_action_result(result: ActionResult) -> None:
+    log_action(
+        {
+            "action": result.action,
+            "repo": result.repo,
+            "ok": result.ok,
+            "changed": result.changed,
+            "session_id": result.meta.get("session_id"),
+            "stderr": result.stderr,
+        }
+    )
+
+
+def include_patch_hash() -> bool:
+    value = os.getenv("ACS_ACTION_LOG_INCLUDE_HASH", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def check_branch_guard(path: Path) -> str | None:
+    try:
+        assert_not_main_branch(path)
+    except RuntimeError as exc:
+        return str(exc)
+    return None
+
+
+def git_diff_signature(path: Path) -> str:
+    unstaged = run(["git", "diff", "--no-ext-diff"], cwd=path, timeout=60).stdout
+    staged = run(["git", "diff", "--cached", "--no-ext-diff"], cwd=path, timeout=60).stdout
+    signature = hashlib.sha256((unstaged + staged).encode("utf-8")).hexdigest()
+    return signature
+
+
+def format_action_result(result: ActionResult) -> str:
+    files_in_patch = result.meta.get("files_in_patch")
+    if result.ok and result.changed:
+        suffix = f" ({files_in_patch} Dateien im Patch)" if files_in_patch else ""
+        status_line = f"✔ Patch angewendet{suffix}."
+    elif result.ok and not result.changed:
+        status_line = "⚠ Patch angewendet, aber keine Änderungen."
+    else:
+        error_summary = (result.details or "Unbekannter Fehler").splitlines()[0]
+        status_line = f"❌ Patch fehlgeschlagen: {error_summary}"
+    details = result.details.strip()
+    if not details or details == status_line:
+        return status_line
+    return f"{status_line}\n\n{details}"
+
+
+def build_action_response(
+    result: ActionResult, response_format: str, status_code: int
+) -> Response:
+    if response_format == "json":
+        return JSONResponse(result.model_dump(), status_code=status_code)
+    if response_format != "text":
+        error = ActionResult(
+            ok=False,
+            action=result.action,
+            repo=result.repo,
+            details=f"Unknown format: {response_format}",
+            changed=False,
+            meta=result.meta,
+        )
+        return PlainTextResponse(format_action_result(error), status_code=400)
+    return PlainTextResponse(format_action_result(result), status_code=status_code)
 
 
 def normalize_patch_output(output: str) -> str:
