@@ -192,15 +192,17 @@
           });
           if (!res.ok) {
             const errorText = await res.text();
-            setApplyStatus(`❌ Patch fehlgeschlagen: ${errorText}`, "error");
-            document.getElementById("applyOut").textContent = "";
+            const [summary, ...rest] = errorText.split("\n");
+            setApplyStatus(`❌ Patch fehlgeschlagen: ${summary}`, "error");
+            document.getElementById("applyOut").textContent = rest.join("\n").trim();
             return;
           }
           const contentType = res.headers.get("Content-Type") || "";
           if (!contentType.includes("application/json")) {
             const errorText = await res.text();
-            setApplyStatus(`❌ Patch fehlgeschlagen: ${errorText}`, "error");
-            document.getElementById("applyOut").textContent = "";
+            const [summary, ...rest] = errorText.split("\n");
+            setApplyStatus(`❌ Patch fehlgeschlagen: ${summary}`, "error");
+            document.getElementById("applyOut").textContent = rest.join("\n").trim();
             return;
           }
           const data = await res.json();
