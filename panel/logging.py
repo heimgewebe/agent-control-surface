@@ -30,10 +30,13 @@ def log_action(record: dict[str, Any]) -> None:
     config = resolve_action_log_config()
     if not config.enabled or config.path is None:
         return
-    config.path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **record,
-    }
-    with config.path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    try:
+        config.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **record,
+        }
+        with config.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        return

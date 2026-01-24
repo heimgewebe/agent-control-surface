@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -106,8 +107,31 @@ def api_session_diff_download(session_id: str, repo: str = Query(...)) -> PlainT
 
 @app.post("/api/patch/apply", response_class=PlainTextResponse)
 def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response:
-    target = get_repo(req.repo)
-    assert_branch_guard(target.path)
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=req.repo,
+            details=str(exc.detail),
+            changed=False,
+            meta=build_patch_meta(req),
+        )
+        log_action_result(result)
+        return build_action_response(result, format, status_code=exc.status_code)
+    branch_guard_error = check_branch_guard(target.path)
+    if branch_guard_error:
+        result = ActionResult(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            details=branch_guard_error,
+            changed=False,
+            meta=build_patch_meta(req),
+        )
+        log_action_result(result)
+        return build_action_response(result, format, status_code=409)
     result_meta = build_patch_meta(req)
     if not req.patch.strip():
         result = ActionResult(
@@ -120,44 +144,56 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
         )
         log_action_result(result)
         return build_action_response(result, format, status_code=400)
-    before_diff = run(["git", "diff"], cwd=target.path, timeout=60)
-    check_cmd = ["git", "apply", "--check"]
-    if req.three_way:
-        check_cmd.append("--3way")
-    check_cmd.append("-")
-    check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-    if check.code != 0:
+    try:
+        before_status = run(["git", "status", "--porcelain=v1"], cwd=target.path, timeout=60)
+        check_cmd = ["git", "apply", "--check"]
+        if req.three_way:
+            check_cmd.append("--3way")
+        check_cmd.append("-")
+        check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if check.code != 0:
+            result = ActionResult(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                details=combine_output(check),
+                changed=False,
+                stderr=check.stderr or None,
+                meta=result_meta,
+            )
+            log_action_result(result)
+            return build_action_response(result, format, status_code=409)
+        apply_cmd = ["git", "apply"]
+        if req.three_way:
+            apply_cmd.append("--3way")
+        apply_cmd.append("-")
+        out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if out.code != 0:
+            # Patch passed --check but failed to apply; treat as conflict/state issue.
+            result = ActionResult(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                details=combine_output(out),
+                changed=False,
+                stderr=out.stderr or None,
+                meta=result_meta,
+            )
+            log_action_result(result)
+            return build_action_response(result, format, status_code=409)
+        after_status = run(["git", "status", "--porcelain=v1"], cwd=target.path, timeout=60)
+    except Exception as exc:
         result = ActionResult(
             ok=False,
             action="patch.apply",
             repo=target.key,
-            details=combine_output(check),
+            details=str(exc),
             changed=False,
-            stderr=check.stderr or None,
             meta=result_meta,
         )
         log_action_result(result)
-        return build_action_response(result, format, status_code=409)
-    apply_cmd = ["git", "apply"]
-    if req.three_way:
-        apply_cmd.append("--3way")
-    apply_cmd.append("-")
-    out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-    if out.code != 0:
-        # Patch passed --check but failed to apply; treat as conflict/state issue.
-        result = ActionResult(
-            ok=False,
-            action="patch.apply",
-            repo=target.key,
-            details=combine_output(out),
-            changed=False,
-            stderr=out.stderr or None,
-            meta=result_meta,
-        )
-        log_action_result(result)
-        return build_action_response(result, format, status_code=409)
-    after_diff = run(["git", "diff"], cwd=target.path, timeout=60)
-    changed = before_diff.stdout != after_diff.stdout
+        return build_action_response(result, format, status_code=500)
+    changed = before_status.stdout != after_status.stdout
     details = combine_output(out).strip()
     if not details:
         details = "Patch applied." if changed else "Patch applied, but no changes."
@@ -243,7 +279,9 @@ def combine_output(result: Any) -> str:
 def build_patch_meta(req: ApplyPatchReq) -> dict[str, Any]:
     patch_hash = hashlib.sha256(req.patch.encode("utf-8")).hexdigest()
     files = sorted(extract_patch_files(req.patch))
-    meta: dict[str, Any] = {"patch_hash": patch_hash}
+    meta: dict[str, Any] = {}
+    if include_patch_hash():
+        meta["patch_hash"] = patch_hash
     if files:
         meta["files"] = files
         meta["files_changed"] = len(files)
@@ -281,6 +319,19 @@ def log_action_result(result: ActionResult) -> None:
             "stderr": result.stderr,
         }
     )
+
+
+def include_patch_hash() -> bool:
+    value = os.getenv("ACS_ACTION_LOG_INCLUDE_HASH", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def check_branch_guard(path: Path) -> str | None:
+    try:
+        assert_not_main_branch(path)
+    except RuntimeError as exc:
+        return str(exc)
+    return None
 
 
 def format_action_result(result: ActionResult) -> str:
