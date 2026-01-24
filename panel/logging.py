@@ -21,6 +21,8 @@ def resolve_action_log_config() -> ActionLogConfig:
     if not env_value:
         return ActionLogConfig(enabled=False, path=None)
     normalized = env_value.strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return ActionLogConfig(enabled=False, path=None)
     if normalized in {"1", "true", "yes", "on"}:
         return ActionLogConfig(enabled=True, path=DEFAULT_LOG_PATH)
     return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())

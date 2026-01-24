@@ -15,7 +15,7 @@ from .logging import log_action
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
-app = FastAPI(title="jules-panel")
+app = FastAPI(title="agent-control-surface")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -105,7 +105,7 @@ def api_session_diff_download(session_id: str, repo: str = Query(...)) -> PlainT
     )
 
 
-@app.post("/api/patch/apply", response_class=PlainTextResponse)
+@app.post("/api/patch/apply")
 def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response:
     try:
         target = get_repo(req.repo)
@@ -145,7 +145,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
         log_action_result(result)
         return build_action_response(result, format, status_code=400)
     try:
-        before_status = run(["git", "status", "--porcelain=v1"], cwd=target.path, timeout=60)
+        before_diff = git_diff_signature(target.path)
         check_cmd = ["git", "apply", "--check"]
         if req.three_way:
             check_cmd.append("--3way")
@@ -181,7 +181,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
             )
             log_action_result(result)
             return build_action_response(result, format, status_code=409)
-        after_status = run(["git", "status", "--porcelain=v1"], cwd=target.path, timeout=60)
+        after_diff = git_diff_signature(target.path)
     except Exception as exc:
         result = ActionResult(
             ok=False,
@@ -193,7 +193,7 @@ def api_patch_apply(req: ApplyPatchReq, format: str = Query("text")) -> Response
         )
         log_action_result(result)
         return build_action_response(result, format, status_code=500)
-    changed = before_status.stdout != after_status.stdout
+    changed = before_diff != after_diff
     details = combine_output(out).strip()
     if not details:
         details = "Patch applied." if changed else "Patch applied, but no changes."
@@ -332,6 +332,11 @@ def check_branch_guard(path: Path) -> str | None:
     except RuntimeError as exc:
         return str(exc)
     return None
+
+
+def git_diff_signature(path: Path) -> str:
+    out = run(["git", "diff", "--no-ext-diff"], cwd=path, timeout=60)
+    return out.stdout
 
 
 def format_action_result(result: ActionResult) -> str:
