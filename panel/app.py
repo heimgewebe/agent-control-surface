@@ -12,7 +12,7 @@ from starlette.requests import Request
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
-app = FastAPI(title="jules-panel")
+app = FastAPI(title="agent-control-surface")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 

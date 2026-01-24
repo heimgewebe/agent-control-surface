@@ -1,1 +1,1 @@
-"""jules-panel package."""
+"""agent-control-surface package."""

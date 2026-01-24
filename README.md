@@ -1,4 +1,4 @@
-# jules-panel
+# agent-control-surface (acs)
 
 Local-only web UI to drive Jules CLI sessions and a safe, step-by-step Git workflow. This is a control surface (Lenkrad), **not** an autopilot.
 
@@ -42,16 +42,16 @@ uvicorn panel.app:app --host 127.0.0.1 --port 8099
 ./scripts/install-user-service.sh
 ```
 
-Die Unit liegt in `systemd/jules-panel.service` und startet das Panel lokal auf `127.0.0.1:8099`.
+Die Unit liegt in `systemd/agent-control-surface.service` und startet das Panel lokal auf `127.0.0.1:8099`.
 
-**Annahme:** Die `.venv` liegt in `~/repos/heimgewebe/jules-panel/.venv` und `jules` ist im PATH des systemd-Users verfügbar (z.B. via `~/.local/bin`). Bei Änderungen am venv-Pfad muss die ExecStart-Zeile in der Service-Datei angepasst werden.
+**Annahme:** Die `.venv` liegt in `~/repos/heimgewebe/agent-control-surface/.venv` und `jules` ist im PATH des systemd-Users verfügbar (z.B. via `~/.local/bin`). Bei Änderungen am venv-Pfad muss die ExecStart-Zeile in der Service-Datei angepasst werden.
 
 ## iPad Zugriff via SSH-Tunnel (Blink Beispiel)
 
 In der Blink-SSH-Config:
 
 ```
-Host julespanel
+Host acs
   HostName 10.7.0.1
   User alex
   LocalForward 8099 127.0.0.1:8099
@@ -64,7 +64,7 @@ Host julespanel
 
 Nutzung:
 
-- `ssh julespanel`
+- `ssh acs`
 - iPad Safari: `http://127.0.0.1:8099`
 
 ## Warnhinweise (Pflicht)
@@ -87,7 +87,7 @@ Nutzung:
 │  └─ templates/
 │     └─ index.html
 ├─ systemd/
-│  └─ jules-panel.service
+│  └─ agent-control-surface.service
 └─ scripts/
    └─ install-user-service.sh
 ```
