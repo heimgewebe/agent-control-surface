@@ -184,22 +184,34 @@
         const sessionId = document.getElementById("applySessionId").value.trim();
         const body = { repo: repo(), patch, three_way: threeWay };
         if (sessionId) body.session_id = sessionId;
-        let data = null;
         try {
           const res = await fetch("/api/patch/apply?format=json", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
-          data = await res.json();
+          if (!res.ok) {
+            const errorText = await res.text();
+            setApplyStatus(`❌ Patch fehlgeschlagen: ${errorText}`, "error");
+            document.getElementById("applyOut").textContent = "";
+            return;
+          }
+          const contentType = res.headers.get("Content-Type") || "";
+          if (!contentType.includes("application/json")) {
+            const errorText = await res.text();
+            setApplyStatus(`❌ Patch fehlgeschlagen: ${errorText}`, "error");
+            document.getElementById("applyOut").textContent = "";
+            return;
+          }
+          const data = await res.json();
+          const status = formatApplyStatus(data);
+          setApplyStatus(status.text, status.state);
+          document.getElementById("applyOut").textContent = data.details || "";
         } catch (error) {
           setApplyStatus(`❌ Patch fehlgeschlagen: ${error.message}`, "error");
           document.getElementById("applyOut").textContent = "";
           return;
         }
-        const status = formatApplyStatus(data);
-        setApplyStatus(status.text, status.state);
-        document.getElementById("applyOut").textContent = data.details || "";
       }
       async function createBranch() {
         const name = document.getElementById("branch").value.trim();

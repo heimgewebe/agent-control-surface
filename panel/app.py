@@ -335,8 +335,10 @@ def check_branch_guard(path: Path) -> str | None:
 
 
 def git_diff_signature(path: Path) -> str:
-    out = run(["git", "diff", "--no-ext-diff"], cwd=path, timeout=60)
-    return out.stdout
+    unstaged = run(["git", "diff", "--no-ext-diff"], cwd=path, timeout=60).stdout
+    staged = run(["git", "diff", "--cached", "--no-ext-diff"], cwd=path, timeout=60).stdout
+    signature = hashlib.sha256((unstaged + staged).encode("utf-8")).hexdigest()
+    return signature
 
 
 def format_action_result(result: ActionResult) -> str:
