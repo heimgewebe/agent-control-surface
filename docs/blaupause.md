@@ -278,6 +278,7 @@ Diese Blaupause ist genau das.
 **Ursachen:**
 - Jules-Backend ist partiell Blackbox
 - Memory-Persistenz ist nicht durch Contracts garantiert
+
 **Bewertung:** produktiv (Architektur bleibt korrekt, selbst wenn Agent-Memory wegfällt)
 
 ## Offene Leitfragen
