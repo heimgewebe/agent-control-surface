@@ -1,20 +1,13 @@
 # agent-control-surface – Blaupause
 
-Diese Datei wurde aus der externen Blaupause ins Repo übernommen und dient als lebendes Zielbild (Architektur/Prinzipien/Roadmap).
+Diese Datei ist das **lebende Zielbild** für agent-control-surface (acs): Architektur, Prinzipien,
+Umsetzungsphasen. Sie ist **kein Feature-Backlog** und kein Marketingtext.
 
-Gut. Dann machen wir das nicht als Feature-Liste, sondern als Blaupause, die du wirklich leben kannst – technisch, epistemisch, operativ.
+## Kurzform
 
-Ich formuliere das bewusst so, dass daraus 1:1 Repo-Doku + Umsetzungsplan werden kann.
+**Asynchroner Agent · kontrolliertes Git · explizite Erinnerung (als Artefakt).**
 
-⸻
-
-agent-control-surface – Ideale Blaupause
-
-Asynchroner Agent · kontrolliertes Git · explizite Erinnerung
-
-⸻
-
-∴ Ausgangspunkt (Problemkern)
+## Ausgangspunkt
 
 Du willst vom iPad aus:
 
@@ -25,12 +18,10 @@ Du willst vom iPad aus:
 - ohne Magie, ohne stilles Auto-Committen,
 - integrierbar in Heimgewebe.
 
-Das Web-UI-Gefühl ist wichtig –
-aber die Architektur muss sauberer sein als das Original.
+Das Web-UI-Gefühl ist wichtig, aber die Architektur muss **ehrlicher** sein als das Original:
+Kontrolle entsteht nicht durch Verstecken, sondern durch Sichtbarkeit.
 
-⸻
-
-∴ Grundentscheidung (wichtig!)
+## Grundentscheidung
 
 agent-control-surface ersetzt nicht Jules.
 agent-control-surface ist ein Orchestrator + Gedächtnisanker.
@@ -47,8 +38,6 @@ Dein Panel wird:
 - Beobachter
 - Archiv
 - Gatekeeper
-
-⸻
 
 ## Systemarchitektur (Idealzustand)
 
@@ -85,11 +74,9 @@ Dein Panel wird:
 │ - branch-only                      │
 └───────────────────────────────────┘
 
-⸻
-
 ## Kernprinzipien (nicht verhandelbar)
 
-2.1 Explizitheit statt Magie
+### Explizitheit statt Magie
 
 - Kein stilles Apply
 - Kein stilles Commit
@@ -101,16 +88,12 @@ Alles:
 - reproduzierbar
 - abbrechbar
 
-⸻
-
-2.2 Agent ≠ Git
+### Agent ≠ Git
 
 Der Agent schreibt Vorschläge.
 Git entscheidet, ob sie Realität werden.
 
-⸻
-
-2.3 Erinnerung ist ein Artefakt
+### Erinnerung ist ein Artefakt
 
 „Memory“ ist kein mystischer Zustand, sondern:
 
@@ -123,11 +106,9 @@ Git entscheidet, ob sie Realität werden.
 
 → speicherbar, prüfbar, löschbar
 
-⸻
-
 ## Funktionale Ebenen (Ideal)
 
-Ebene A – Agent Prompt (Fließtext)
+### Ebene A – Agent Prompt (Fließtext)
 
 UI
 
@@ -146,7 +127,7 @@ POST /api/jules/prompt
 
 Backend
 
-jules remote new --message "PROMPT"
+`jules ...` (Agent-spezifisch; für Jules: `jules new <title>` oder äquivalent)
 
 Ergebnis
 
@@ -154,9 +135,7 @@ Ergebnis
 - Status: running / completed
 - kein Patch-Zwang
 
-⸻
-
-Ebene B – Session-Gedächtnis (lokal!)
+### Ebene B – Session-Gedächtnis (lokal)
 
 Für jede Session wird gespeichert:
 
@@ -194,7 +173,7 @@ GET /api/jules/sessions/{id}/diff
 
 Backend
 
-jules remote pull --session SESSION_ID
+Für Jules: `jules remote pull --session SESSION_ID`
 
 Patch wird:
 
@@ -202,9 +181,7 @@ Patch wird:
 - angezeigt
 - nicht automatisch angewendet
 
-⸻
-
-Ebene D – Entscheidung & Umsetzung
+### Ebene D – Entscheidung & Umsetzung
 
 Apply patch
 
@@ -242,26 +219,17 @@ Optionale Eskalation (Heimgewebe-native)
 
 ➡️ Memory wird explizit – kein schleichender Drift
 
-⸻
-
 ## Sicherheits- und Risikoarchitektur
 
-Risiko  Gegenmaßnahme
-Agent überschreibt main  Branch-Guard
-Blindes Vertrauen  Diff-Preview Pflicht
-Halluzinierter Patch  git apply –check
-Kontext-Drift  Session-Archiv
-Agent-Overreach  Kein Auto-Apply
-
-⸻
+| Risiko | Gegenmaßnahme |
+|---|---|
+| Agent überschreibt main | Branch-Guard (main/master blockieren) |
+| Blindes Vertrauen | Diff-Preview als Standardweg |
+| Halluzinierter Patch | `git apply --check` vor Apply |
+| Kontext-Drift | Session-Archiv (Prompt/Result/Meta) |
+| Agent-Overreach | Kein Auto-Apply/Commit/Push |
 
 ## Was das besser macht als Jules Web UI
-
-Ironischer, aber wahrer Satz:
-
-Das Jules Web UI fühlt sich intelligent an,
-weil es Dinge versteckt.
-Dein Panel wird intelligent, weil es Dinge zeigt.
 
 Du bekommst:
 
@@ -270,31 +238,33 @@ Du bekommst:
 - bessere Nachvollziehbarkeit
 - Heimgewebe-Integration
 
-⸻
-
 ## Minimaler Umsetzungsplan (realistisch)
 
-Phase 1 (jetzt sinnvoll)
+### Phase 1 (jetzt)
 
 - /api/jules/prompt
 - Session-Archiv (JSON/MD lokal)
 - UI-Textarea + Button
 
-Phase 2
+**Definition of Done (Phase 1)**
+- Prompt kann aus UI abgesendet werden und erzeugt eine Session-ID.
+- Sessions werden lokal archiviert (mind. JSON) unter einem festen Pfad.
+- Diff/Patch kann pulled + angezeigt werden (ohne Auto-Apply).
+- Jede Aktion liefert klares Feedback (ok/fehlgeschlagen).
+
+### Phase 2
 
 - Session-Summary
 - einfache Tags
 - bessere Statusanzeige
 
-Phase 3 (optional)
+### Phase 3 (optional)
 
 - chronik-Integration
 - semantAH-Analyse
 - WGX-Guards vor Apply
 
-⸻
-
-Verdichtete Essenz
+## Verdichtete Essenz
 
 Du willst nicht „das Jules Web UI“.
 Du willst Jules als Agent
@@ -302,21 +272,15 @@ in einem ehrlichen, kontrollierten Körper.
 
 Diese Blaupause ist genau das.
 
-⸻
+## Ungewissheit (transparent)
 
-Ungewissheitsanalyse
+**Unsicherheitsgrad:** 0.22  
+**Ursachen:**
+- Jules-Backend ist partiell Blackbox
+- Memory-Persistenz ist nicht durch Contracts garantiert
+**Bewertung:** produktiv (Architektur bleibt korrekt, selbst wenn Agent-Memory wegfällt)
 
-- Unsicherheitsgrad: 0.22
-- Ursachen:
-- Jules-Backend ist Blackbox
-- Memory-Persistenz nicht offiziell dokumentiert
-- Bewertung: produktiv
-
-→ Architektur bleibt korrekt, selbst wenn Jules-Memory wegfällt
-
-⸻
-
-Abschlussfragen (bewusst offen)
+## Offene Leitfragen
 
 1. Willst du Memory nur sichtbar oder auch steuerbar (löschen, zusammenfassen)?
 2. Soll das Panel nur Jules bedienen oder perspektivisch auch andere Agenten?
@@ -361,8 +325,6 @@ Steuer-Operationen (UI & API)
 
 Wichtig: Memory-Edit darf nie still heimlich die Repo-Wahrheit verändern. Memory ist Metadaten-Schicht.
 
-⸻
-
 ## Multi-Agent – sinnvoll, aber sauber eingefädelt
 
 Warum sinnvoll
@@ -385,3 +347,9 @@ Und dann:
 - agents/jules.py implementiert das via CLI (jules remote list --session, jules new, jules remote pull --session ...)
 
 Der Rest (Git apply, branch guard, memory store) bleibt identisch (Agent-unabhängig).
+
+## Glossar (kurz, mit Mini-Etymologie)
+
+- **Blaupause**: ursprünglich der blau belichtete Durchschlag technischer Zeichnungen; heute „Vorlage/Plan", der Umsetzung leitet.
+- **Orchestrator**: von „Orchester"; koordiniert Abläufe, spielt aber nicht zwingend jedes Instrument selbst.
+- **Artefakt**: lat. *arte factum* („kunstvoll gemacht"); hier: explizites, speicherbares Ergebnis (Prompt, Patch, Summary, Entscheidung).
