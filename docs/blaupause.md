@@ -54,11 +54,16 @@ Dein Panel wird:
 │  - Diffs                           │
 │  - Apply / PR Wizard               │
 │                                    │
-│  API:                              │
-│  - /jules/prompt                   │
-│  - /jules/sessions                 │
-│  - /jules/pull                     │
-│  - /git/apply                      │
+│  API (aktueller Stand):            │
+│  - /api/sessions                   │
+│  - /api/sessions/new               │
+│  - /api/sessions/{session_id}/diff │
+│  - /api/patch/apply                │
+│  - /api/git/*                      │
+│  (ursprüngliche Blaupause-Endpunkte│
+│   waren: /jules/prompt,            │
+│   /jules/sessions, /jules/pull,    │
+│   /git/apply)                      │
 └─────┬─────────────────────────────┘
       │ CLI
 ┌─────▼─────────────────────────────┐
