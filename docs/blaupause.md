@@ -263,7 +263,7 @@ Du bekommst:
 
 ### Phase 1b (danach: Soll-API einführen)
 
-- /api/jules/prompt (Alias/Wrapper um Sessions/New; besserer Fließtext-Entry)
+- /api/jules/prompt (Alias/Wrapper um /api/sessions/new; besserer Fließtext-Entry)
 
 **Definition of Done (Phase 1)**
 - Prompt kann aus UI abgesendet werden und erzeugt eine Session-ID.
