@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
-from .logging import log_action
+from .logging import log_action, redact_secrets
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
@@ -30,6 +30,9 @@ JOBS: dict[str, "JobState"] = {}
 JOB_CREATED_AT: dict[str, float] = {}
 JOB_MAX_AGE_SECONDS = 24 * 60 * 60
 JOB_MAX_ENTRIES = 200
+MAX_JOB_LOG_LINES = 1000
+MAX_LOG_LINE_CHARS = 4000
+MAX_STDOUT_CHARS = 50000
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
 
 
@@ -106,6 +109,10 @@ class JobStatusResponse(BaseModel):
     status: str
     results: list[ActionResult]
     log_tail: str
+
+
+# Fix forward references for JobState (which uses ActionResult)
+JobState.model_rebuild()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -295,14 +302,41 @@ def log_action_result(result: ActionResult, job_id: str | None = None) -> None:
     log_action(result.model_dump(), job_id=job_id)
 
 
+def _redact_action_result(r: ActionResult) -> ActionResult:
+    return r.model_copy(update={
+        "stdout": redact_secrets(r.stdout) if r.stdout else r.stdout,
+        "stderr": redact_secrets(r.stderr) if r.stderr else r.stderr,
+        "message": redact_secrets(r.message) if r.message else r.message,
+        "pr_url": redact_secrets(r.pr_url) if r.pr_url else r.pr_url,
+    })
+
+
 def record_job_result(job_id: str, result: ActionResult) -> None:
-    line = json.dumps(result.model_dump(), ensure_ascii=False)
+    # Cap stdout/stderr to avoid excessive memory usage
+    updates = {}
+    if len(result.stdout) > MAX_STDOUT_CHARS:
+        updates["stdout"] = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
+    if len(result.stderr) > MAX_STDOUT_CHARS:
+        updates["stderr"] = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
+
+    # Create truncated copy first (if needed), then redacted copy
+    truncated_result = result.model_copy(update=updates) if updates else result
+
+    # Create redacted copy for in-memory storage (API safety)
+    safe_result = _redact_action_result(truncated_result)
+
+    line = json.dumps(safe_result.model_dump(), ensure_ascii=False)
+    if len(line) > MAX_LOG_LINE_CHARS:
+        line = line[:MAX_LOG_LINE_CHARS] + "... (truncated)"
+
     with JOB_LOCK:
         job_state = JOBS.get(job_id)
         if job_state:
-            job_state.results.append(result)
+            job_state.results.append(safe_result)
             job_state.log_lines.append(line)
-    log_action_result(result, job_id=job_id)
+            if len(job_state.log_lines) > MAX_JOB_LOG_LINES:
+                job_state.log_lines.pop(0)
+    log_action_result(safe_result, job_id=job_id)
 
 
 def set_job_status(job_id: str, status: str) -> None:
@@ -369,7 +403,7 @@ def is_valid_branch_name(name: str) -> bool:
         return False
     if "//" in name or "/." in name or "./" in name:
         return False
-    return bool(re.fullmatch(r"[A-Za-z0-9._/\\-]+", name))
+    return bool(re.fullmatch(r"[A-Za-z0-9._/-]+", name))
 
 
 def get_status_files(lines: list[str]) -> list[str]:
@@ -547,7 +581,7 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
             repo=target.key,
             correlation_id=correlation_id,
             message="Patch is empty",
-            error_kind="git_failed",
+            error_kind="invalid_input",
             code=1,
             files=files or None,
             repo_path=target.path,
@@ -842,7 +876,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
             repo=target.key,
             correlation_id=correlation_id,
             message="Invalid branch name",
-            error_kind="git_failed",
+            error_kind="invalid_input",
             code=1,
             repo_path=target.path,
         )
@@ -1143,11 +1177,11 @@ def build_default_pr_body(
     return "\n".join(body_lines)
 
 
-def extract_pr_url(text: str) -> str | None:
+def extract_pr_url(text: str | None) -> str | None:
     if not text:
         return None
     match = re.search(
-        r"https://github\\.com/[^/\\s]+/[^/\\s]+/pull/\\d+",
+        r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
         text,
     )
     if not match:
