@@ -73,6 +73,16 @@ Nutzung:
 - **Bewusste Schritte:** jeder Git-Schritt ist manuell und explizit.
 - **Allowlist:** keine freien Repo-Pfade, nur definierte Ziele.
 
+## Publish (Push+PR)
+
+- Ein neuer Button im PR-Wizard führt `git add/commit`, `git push` und `gh pr create` in einem Job aus.
+- Der Endpoint `POST /api/git/publish` startet einen Background-Job und liefert `{ job_id, correlation_id }`.
+- Der Job-Status ist via `GET /api/jobs/{job_id}` abrufbar; die Ergebnisse enthalten strukturierte `ActionResult`-Einträge inklusive `stdout/stderr`, `error_kind` und `pr_url`.
+- Actions werden optional als JSONL nach `~/.local/state/agent-control-surface/logs/YYYY-MM-DD.jsonl` geloggt (aktivieren via `ACS_ACTION_LOG=1`, Secrets werden redacted).
+- Hinweis: Ein PR entsteht erst nach einem erfolgreichen Push; der Publish-Flow bündelt Push + PR in einem Schritt.
+
+Siehe `docs/publish.md` für curl-Beispiele.
+
 ## Repo-Layout
 
 ```

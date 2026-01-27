@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import json
+import re
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +24,20 @@ from .runner import assert_not_main_branch, run
 app = FastAPI(title="agent-control-surface")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+JOB_LOCK = threading.Lock()
+JOBS: dict[str, "JobState"] = {}
+JOB_CREATED_AT: dict[str, float] = {}
+JOB_MAX_AGE_SECONDS = 24 * 60 * 60
+JOB_MAX_ENTRIES = 200
+LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
+
+
+class JobState(BaseModel):
+    job_id: str
+    status: str
+    results: list["ActionResult"] = Field(default_factory=list)
+    log_lines: list[str] = Field(default_factory=list)
 
 
 class NewSessionReq(BaseModel):
@@ -51,10 +71,41 @@ class ActionResult(BaseModel):
     ok: bool
     action: str
     repo: str
-    details: str
-    changed: bool
-    stderr: str | None = None
-    meta: dict[str, Any] = Field(default_factory=dict)
+    branch: str | None = None
+    head: str | None = None
+    changed: bool | None = None
+    files: list[str] | None = None
+    pr_url: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+    code: int | None = None
+    error_kind: str | None = None
+    message: str | None = None
+    ts: str
+    duration_ms: int | None = None
+    correlation_id: str
+
+
+class PublishReq(BaseModel):
+    repo: str
+    branch: str | None = None
+    commit_message: str | None = None
+    pr_title: str | None = None
+    pr_body: str | None = None
+    base: str = "main"
+    draft: bool = True
+    include_diffstat: bool = True
+
+
+class PublishJobResponse(BaseModel):
+    job_id: str
+    correlation_id: str
+
+
+class JobStatusResponse(BaseModel):
+    status: str
+    results: list[ActionResult]
+    log_tail: str
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -107,113 +158,20 @@ def api_session_diff_download(session_id: str, repo: str = Query(...)) -> PlainT
 
 @app.post("/api/patch/apply")
 def api_patch_apply(req: ApplyPatchReq, response_format: str = Query("text")) -> Response:
-    try:
-        target = get_repo(req.repo)
-    except HTTPException as exc:
-        result = ActionResult(
-            ok=False,
-            action="patch.apply",
-            repo=req.repo,
-            details=str(exc.detail),
-            changed=False,
-            meta=build_patch_meta(req),
-        )
-        log_action_result(result)
-        return build_action_response(result, response_format, status_code=exc.status_code)
-    branch_guard_error = check_branch_guard(target.path)
-    if branch_guard_error:
-        result = ActionResult(
-            ok=False,
-            action="patch.apply",
-            repo=target.key,
-            details=branch_guard_error,
-            changed=False,
-            meta=build_patch_meta(req),
-        )
-        log_action_result(result)
-        return build_action_response(result, response_format, status_code=409)
-    result_meta = build_patch_meta(req)
-    if not req.patch.strip():
-        result = ActionResult(
-            ok=False,
-            action="patch.apply",
-            repo=target.key,
-            details="Patch is empty",
-            changed=False,
-            meta=result_meta,
-        )
-        log_action_result(result)
-        return build_action_response(result, response_format, status_code=400)
-    try:
-        before_diff = git_diff_signature(target.path)
-        check_cmd = ["git", "apply", "--check"]
-        if req.three_way:
-            check_cmd.append("--3way")
-        check_cmd.append("-")
-        check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-        if check.code != 0:
-            result = ActionResult(
-                ok=False,
-                action="patch.apply",
-                repo=target.key,
-                details=combine_output(check),
-                changed=False,
-                stderr=check.stderr or None,
-                meta=result_meta,
-            )
-            log_action_result(result)
-            return build_action_response(result, response_format, status_code=409)
-        apply_cmd = ["git", "apply"]
-        if req.three_way:
-            apply_cmd.append("--3way")
-        apply_cmd.append("-")
-        out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
-        if out.code != 0:
-            # Patch passed --check but failed to apply; treat as conflict/state issue.
-            result = ActionResult(
-                ok=False,
-                action="patch.apply",
-                repo=target.key,
-                details=combine_output(out),
-                changed=False,
-                stderr=out.stderr or None,
-                meta=result_meta,
-            )
-            log_action_result(result)
-            return build_action_response(result, response_format, status_code=409)
-        after_diff = git_diff_signature(target.path)
-    except Exception as exc:
-        result = ActionResult(
-            ok=False,
-            action="patch.apply",
-            repo=target.key,
-            details=str(exc),
-            changed=False,
-            meta=result_meta,
-        )
-        log_action_result(result)
-        return build_action_response(result, response_format, status_code=500)
-    changed = before_diff != after_diff
-    details = combine_output(out).strip()
-    if not details:
-        details = "Patch applied." if changed else "Patch applied, but no changes."
-    result = ActionResult(
-        ok=True,
-        action="patch.apply",
-        repo=target.key,
-        details=details,
-        changed=changed,
-        stderr=out.stderr or None,
-        meta=result_meta,
-    )
-    log_action_result(result)
-    return build_action_response(result, response_format, status_code=200)
+    result, status_code = apply_patch_action(req)
+    return build_action_response(result, response_format, status_code=status_code)
+
+
+@app.post("/api/patch/apply.json", response_class=JSONResponse)
+def api_patch_apply_json(req: ApplyPatchReq) -> JSONResponse:
+    result, status_code = apply_patch_action(req)
+    return JSONResponse(result.model_dump(), status_code=status_code)
 
 
 @app.post("/api/git/branch", response_class=PlainTextResponse)
 def api_git_branch(req: GitBranchReq) -> str:
     target = get_repo(req.repo)
-    if not req.name or " " in req.name:
+    if not is_valid_branch_name(req.name):
         raise HTTPException(status_code=400, detail="Invalid branch name")
     out = run(["git", "checkout", "-b", req.name], cwd=target.path, timeout=30)
     return combine_output(out)
@@ -244,12 +202,24 @@ def api_git_commit(req: GitCommitReq) -> str:
     return combine_output(out)
 
 
+@app.post("/api/git/commit.json", response_class=JSONResponse)
+def api_git_commit_json(req: GitCommitReq) -> JSONResponse:
+    result, status_code = commit_action(req)
+    return JSONResponse(result.model_dump(), status_code=status_code)
+
+
 @app.post("/api/git/push", response_class=PlainTextResponse)
 def api_git_push(req: GitPushReq) -> str:
     target = get_repo(req.repo)
     assert_branch_guard(target.path)
     out = run(["git", "push", "-u", "origin", "HEAD"], cwd=target.path, timeout=120)
     return combine_output(out)
+
+
+@app.post("/api/git/push.json", response_class=JSONResponse)
+def api_git_push_json(req: GitPushReq) -> JSONResponse:
+    result, status_code = push_action(req)
+    return JSONResponse(result.model_dump(), status_code=status_code)
 
 
 @app.get("/api/git/pr-prepare", response_class=PlainTextResponse)
@@ -265,6 +235,35 @@ def api_git_pr_prepare(repo: str = Query(...)) -> str:
     )
 
 
+@app.post("/api/git/publish", response_class=JSONResponse)
+def api_git_publish(req: PublishReq) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_publish_job, job_id, correlation_id, req)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.get("/api/jobs/{job_id}", response_class=JSONResponse)
+def api_job_status(job_id: str) -> JSONResponse:
+    with JOB_LOCK:
+        purge_jobs_locked()
+        job_state = JOBS.get(job_id)
+    if not job_state:
+        raise HTTPException(status_code=404, detail="Unknown job id")
+    payload = JobStatusResponse(
+        status=job_state.status,
+        results=job_state.results,
+        log_tail=tail_job_logs(job_state.log_lines),
+    )
+    return JSONResponse(payload.model_dump())
+
+
 # NOTE on error handling:
 # - /api/patch/apply returns a structured ActionResult and makes no-ops explicit.
 # - Other git endpoints currently expose stdout/stderr as part of an interactive wizard flow.
@@ -274,23 +273,6 @@ def combine_output(result: Any) -> str:
     if result.stderr:
         output = f"{output}\n{result.stderr}" if output else result.stderr
     return output
-
-
-def build_patch_meta(req: ApplyPatchReq) -> dict[str, Any]:
-    patch_hash = hashlib.sha256(req.patch.encode("utf-8")).hexdigest()
-    files = sorted(extract_patch_files(req.patch))
-    meta: dict[str, Any] = {}
-    if include_patch_hash():
-        meta["patch_hash"] = patch_hash
-    if files:
-        meta["files"] = files
-        meta["files_in_patch"] = len(files)
-    if req.session_id:
-        meta["session_id"] = req.session_id
-        meta["source"] = req.source or "jules"
-    elif req.source:
-        meta["source"] = req.source
-    return meta
 
 
 def extract_patch_files(patch: str) -> set[str]:
@@ -309,22 +291,53 @@ def extract_patch_files(patch: str) -> set[str]:
     return files
 
 
-def log_action_result(result: ActionResult) -> None:
-    log_action(
-        {
-            "action": result.action,
-            "repo": result.repo,
-            "ok": result.ok,
-            "changed": result.changed,
-            "session_id": result.meta.get("session_id"),
-            "stderr": result.stderr,
-        }
-    )
+def log_action_result(result: ActionResult, job_id: str | None = None) -> None:
+    log_action(result.model_dump(), job_id=job_id)
 
 
-def include_patch_hash() -> bool:
-    value = os.getenv("ACS_ACTION_LOG_INCLUDE_HASH", "true").strip().lower()
-    return value not in {"0", "false", "no", "off"}
+def record_job_result(job_id: str, result: ActionResult) -> None:
+    line = json.dumps(result.model_dump(), ensure_ascii=False)
+    with JOB_LOCK:
+        job_state = JOBS.get(job_id)
+        if job_state:
+            job_state.results.append(result)
+            job_state.log_lines.append(line)
+    log_action_result(result, job_id=job_id)
+
+
+def set_job_status(job_id: str, status: str) -> None:
+    with JOB_LOCK:
+        job_state = JOBS.get(job_id)
+        if job_state:
+            job_state.status = status
+
+
+def purge_jobs_locked() -> None:
+    now_ts = time.time()
+    expired = [
+        job_id
+        for job_id, created in JOB_CREATED_AT.items()
+        if now_ts - created > JOB_MAX_AGE_SECONDS
+    ]
+    for job_id in expired:
+        JOBS.pop(job_id, None)
+        JOB_CREATED_AT.pop(job_id, None)
+    if len(JOBS) <= JOB_MAX_ENTRIES:
+        return
+    ordered = sorted(JOB_CREATED_AT.items(), key=lambda item: item[1])
+    while len(ordered) > JOB_MAX_ENTRIES:
+        job_id, _ = ordered.pop(0)
+        JOBS.pop(job_id, None)
+        JOB_CREATED_AT.pop(job_id, None)
+
+
+def tail_job_logs(lines: list[str], max_lines: int = 20, max_chars: int = 4000) -> str:
+    if not lines:
+        return ""
+    tail = "\n".join(lines[-max_lines:])
+    if len(tail) <= max_chars:
+        return tail
+    return tail[-max_chars:]
 
 
 def check_branch_guard(path: Path) -> str | None:
@@ -342,20 +355,126 @@ def git_diff_signature(path: Path) -> str:
     return signature
 
 
+def git_status_porcelain(path: Path) -> list[str]:
+    out = run(["git", "status", "--porcelain"], cwd=path, timeout=30)
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def is_valid_branch_name(name: str) -> bool:
+    if not name or " " in name:
+        return False
+    if name.startswith("-") or name.endswith(".lock"):
+        return False
+    if ".." in name or "@" in name or "~" in name or ":" in name or "\\" in name:
+        return False
+    if "//" in name or "/." in name or "./" in name:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._/\\-]+", name))
+
+
+def get_status_files(lines: list[str]) -> list[str]:
+    files: list[str] = []
+    for line in lines:
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path:
+            files.append(path)
+    return sorted(set(files))
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def new_correlation_id() -> str:
+    return str(uuid.uuid4())
+
+
+def get_git_state(path: Path) -> tuple[str | None, str | None]:
+    try:
+        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path, timeout=20).stdout.strip()
+        head = run(["git", "rev-parse", "HEAD"], cwd=path, timeout=20).stdout.strip()
+        return branch or None, head or None
+    except Exception:
+        return None, None
+
+
+def build_action_result(
+    *,
+    ok: bool,
+    action: str,
+    repo: str,
+    correlation_id: str,
+    stdout: str = "",
+    stderr: str = "",
+    code: int | None = None,
+    error_kind: str | None = None,
+    message: str | None = None,
+    changed: bool | None = None,
+    files: list[str] | None = None,
+    pr_url: str | None = None,
+    branch: str | None = None,
+    head: str | None = None,
+    duration_ms: int | None = None,
+    repo_path: Path | None = None,
+) -> ActionResult:
+    if repo_path and (branch is None or head is None):
+        branch, head = get_git_state(repo_path)
+    return ActionResult(
+        ok=ok,
+        action=action,
+        repo=repo,
+        branch=branch,
+        head=head,
+        changed=changed,
+        files=files,
+        pr_url=pr_url,
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        error_kind=error_kind,
+        message=message,
+        ts=now_iso(),
+        duration_ms=duration_ms,
+        correlation_id=correlation_id,
+    )
+
+
+def get_apply_context(repo: str) -> dict[str, str]:
+    with JOB_LOCK:
+        return dict(LAST_APPLY_CONTEXT.get(repo, {}))
+
+
+def set_apply_context(repo: str, signature: str, session_id: str) -> None:
+    with JOB_LOCK:
+        LAST_APPLY_CONTEXT[repo] = {
+            "signature": signature,
+            "session_id": session_id,
+        }
+
+
 def format_action_result(result: ActionResult) -> str:
-    files_in_patch = result.meta.get("files_in_patch")
-    if result.ok and result.changed:
-        suffix = f" ({files_in_patch} Dateien im Patch)" if files_in_patch else ""
-        status_line = f"✔ Patch angewendet{suffix}."
-    elif result.ok and not result.changed:
-        status_line = "⚠ Patch angewendet, aber keine Änderungen."
-    else:
-        error_summary = (result.details or "Unbekannter Fehler").splitlines()[0]
-        status_line = f"❌ Patch fehlgeschlagen: {error_summary}"
-    details = result.details.strip()
-    if not details or details == status_line:
-        return status_line
-    return f"{status_line}\n\n{details}"
+    if result.action == "patch.apply":
+        files_in_patch = len(result.files or [])
+        if result.ok and result.changed:
+            suffix = f" ({files_in_patch} Dateien im Patch)" if files_in_patch else ""
+            status_line = f"✔ Patch angewendet{suffix}."
+        elif result.ok and result.changed is False:
+            status_line = "⚠ Patch angewendet, aber keine Änderungen."
+        else:
+            error_summary = (result.message or "Unbekannter Fehler").splitlines()[0]
+            status_line = f"❌ Patch fehlgeschlagen: {error_summary}"
+        details = (result.stdout or "").strip()
+        if not details or details == status_line:
+            return status_line
+        return f"{status_line}\n\n{details}"
+    if result.ok:
+        return result.message or (result.stdout or "").strip() or "OK"
+    error_summary = (result.message or result.stderr or result.stdout or "Unbekannter Fehler").splitlines()[0]
+    return f"❌ {error_summary}"
 
 
 def build_action_response(
@@ -364,13 +483,14 @@ def build_action_response(
     if response_format == "json":
         return JSONResponse(result.model_dump(), status_code=status_code)
     if response_format != "text":
-        error = ActionResult(
+        error = build_action_result(
             ok=False,
             action=result.action,
             repo=result.repo,
-            details=f"Unknown format: {response_format}",
-            changed=False,
-            meta=result.meta,
+            correlation_id=result.correlation_id,
+            message=f"Unknown format: {response_format}",
+            error_kind="internal",
+            code=1,
         )
         return PlainTextResponse(format_action_result(error), status_code=400)
     return PlainTextResponse(format_action_result(result), status_code=status_code)
@@ -384,6 +504,683 @@ def normalize_patch_output(output: str) -> str:
         if line.startswith("diff --git"):
             return "\n".join(lines[idx:]).strip()
     return ""
+
+
+def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
+    correlation_id = new_correlation_id()
+    start = time.monotonic()
+    files = sorted(extract_patch_files(req.patch))
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="patch.apply",
+            repo=req.repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+            files=files or None,
+        )
+        log_action_result(result)
+        return result, exc.status_code
+    branch_guard_error = check_branch_guard(target.path)
+    if branch_guard_error:
+        result = build_action_result(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=branch_guard_error,
+            error_kind="branch_guard",
+            code=1,
+            files=files or None,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
+    if not req.patch.strip():
+        result = build_action_result(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Patch is empty",
+            error_kind="git_failed",
+            code=1,
+            files=files or None,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 400
+    try:
+        before_diff = git_diff_signature(target.path)
+        check_cmd = ["git", "apply", "--check"]
+        if req.three_way:
+            check_cmd.append("--3way")
+        check_cmd.append("-")
+        check = run(check_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if check.code != 0:
+            result = build_action_result(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                correlation_id=correlation_id,
+                stdout=check.stdout,
+                stderr=check.stderr,
+                code=check.code,
+                error_kind="git_failed",
+                message=combine_output(check).strip(),
+                files=files or None,
+                repo_path=target.path,
+            )
+            log_action_result(result)
+            return result, 409
+        apply_cmd = ["git", "apply"]
+        if req.three_way:
+            apply_cmd.append("--3way")
+        apply_cmd.append("-")
+        out = run(apply_cmd, cwd=target.path, timeout=60, input_text=req.patch)
+        if out.code != 0:
+            result = build_action_result(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                correlation_id=correlation_id,
+                stdout=out.stdout,
+                stderr=out.stderr,
+                code=out.code,
+                error_kind="git_failed",
+                message=combine_output(out).strip(),
+                files=files or None,
+                repo_path=target.path,
+            )
+            log_action_result(result)
+            return result, 409
+        after_diff = git_diff_signature(target.path)
+    except Exception as exc:
+        result = build_action_result(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="internal",
+            code=1,
+            files=files or None,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 500
+    changed = before_diff != after_diff
+    message = "Patch applied." if changed else "Patch applied, but no changes."
+    result = build_action_result(
+        ok=True,
+        action="patch.apply",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=out.stdout,
+        stderr=out.stderr,
+        code=out.code,
+        message=message,
+        changed=changed,
+        files=files or None,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    log_action_result(result)
+    set_apply_context(target.key, after_diff, req.session_id or "")
+    return result, 200
+
+
+def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
+    correlation_id = new_correlation_id()
+    start = time.monotonic()
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=req.repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        log_action_result(result)
+        return result, exc.status_code
+    branch_guard_error = check_branch_guard(target.path)
+    if branch_guard_error:
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=branch_guard_error,
+            error_kind="branch_guard",
+            code=1,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
+    if not req.message.strip():
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Commit message required",
+            error_kind="git_failed",
+            code=1,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 400
+    status_lines = git_status_porcelain(target.path)
+    if not status_lines:
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Nothing to commit",
+            error_kind="nothing_to_commit",
+            code=1,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
+    add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
+    if add.code != 0:
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            stdout=add.stdout,
+            stderr=add.stderr,
+            code=add.code,
+            error_kind="git_failed",
+            message=combine_output(add).strip(),
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 500
+    staged = run(["git", "diff", "--cached", "--name-only"], cwd=target.path, timeout=30)
+    files = [line.strip() for line in staged.stdout.splitlines() if line.strip()]
+    if not files:
+        result = build_action_result(
+            ok=False,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Nothing to commit",
+            error_kind="nothing_to_commit",
+            code=1,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
+    out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
+    ok = out.code == 0
+    error_kind = None if ok else "git_failed"
+    message = "Commit created." if ok else combine_output(out).strip()
+    if not ok and "nothing to commit" in message.lower():
+        error_kind = "nothing_to_commit"
+    result = build_action_result(
+        ok=ok,
+        action="git.commit",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=out.stdout,
+        stderr=out.stderr,
+        code=out.code,
+        error_kind=error_kind,
+        message=message,
+        changed=ok,
+        files=files,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    log_action_result(result)
+    status_code = 200 if ok else 409 if error_kind == "nothing_to_commit" else 500
+    return result, status_code
+
+
+def push_action(req: GitPushReq) -> tuple[ActionResult, int]:
+    correlation_id = new_correlation_id()
+    start = time.monotonic()
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="git.push",
+            repo=req.repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        log_action_result(result)
+        return result, exc.status_code
+    branch_guard_error = check_branch_guard(target.path)
+    if branch_guard_error:
+        result = build_action_result(
+            ok=False,
+            action="git.push",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=branch_guard_error,
+            error_kind="branch_guard",
+            code=1,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
+    out = run(["git", "push", "-u", "origin", "HEAD"], cwd=target.path, timeout=120)
+    ok = out.code == 0
+    result = build_action_result(
+        ok=ok,
+        action="git.push",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=out.stdout,
+        stderr=out.stderr,
+        code=out.code,
+        error_kind=None if ok else "push_failed",
+        message="Push completed." if ok else combine_output(out).strip(),
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    log_action_result(result)
+    return result, 200 if ok else 500
+
+
+def run_publish_job(job_id: str, correlation_id: str, req: PublishReq) -> None:
+    set_job_status(job_id, "running")
+    ok = False
+    try:
+        ok = execute_publish(job_id, correlation_id, req)
+    except Exception as exc:
+        result = build_action_result(
+            ok=False,
+            action="git.publish",
+            repo=req.repo,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="internal",
+            code=1,
+        )
+        record_job_result(job_id, result)
+    set_job_status(job_id, "done" if ok else "error")
+
+
+def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
+    start = time.monotonic()
+    try:
+        target = get_repo(req.repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="git.publish",
+            repo=req.repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        record_job_result(job_id, result)
+        return False
+    branch_name = (req.branch or "").strip() or generate_branch_name(target.key)
+    if not is_valid_branch_name(branch_name):
+        result = build_action_result(
+            ok=False,
+            action="git.branch",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Invalid branch name",
+            error_kind="git_failed",
+            code=1,
+            repo_path=target.path,
+        )
+        record_job_result(job_id, result)
+        return False
+    branch, _ = get_git_state(target.path)
+    if branch != branch_name:
+        checkout = checkout_branch(target.path, branch_name)
+        checkout_result = build_action_result(
+            ok=checkout.code == 0,
+            action="git.branch",
+            repo=target.key,
+            correlation_id=correlation_id,
+            stdout=checkout.stdout,
+            stderr=checkout.stderr,
+            code=checkout.code,
+            error_kind=None if checkout.code == 0 else "git_failed",
+            message="Switched branch." if checkout.code == 0 else combine_output(checkout).strip(),
+            repo_path=target.path,
+        )
+        record_job_result(job_id, checkout_result)
+        if checkout.code != 0:
+            return False
+    branch, _ = get_git_state(target.path)
+    if branch in {"main", "master"}:
+        result = build_action_result(
+            ok=False,
+            action="git.branch",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Refusing to operate on main/master. Create a branch first.",
+            error_kind="branch_guard",
+            code=1,
+            repo_path=target.path,
+        )
+        record_job_result(job_id, result)
+        return False
+    remote_check = run(["git", "ls-remote", "--heads", "origin"], cwd=target.path, timeout=60)
+    remote_result = build_action_result(
+        ok=remote_check.code == 0,
+        action="git.remote",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=remote_check.stdout,
+        stderr=remote_check.stderr,
+        code=remote_check.code,
+        error_kind=None if remote_check.code == 0 else "push_failed",
+        message="Remote origin reachable." if remote_check.code == 0 else combine_output(remote_check).strip(),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, remote_result)
+    if remote_check.code != 0:
+        return False
+    auth_check = run(["gh", "auth", "status", "--hostname", "github.com"], cwd=target.path, timeout=30)
+    auth_result = build_action_result(
+        ok=auth_check.code == 0,
+        action="gh.auth",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=auth_check.stdout,
+        stderr=auth_check.stderr,
+        code=auth_check.code,
+        error_kind=None if auth_check.code == 0 else "gh_not_auth",
+        message="gh auth ok." if auth_check.code == 0 else combine_output(auth_check).strip(),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, auth_result)
+    if auth_check.code != 0:
+        return False
+    status_lines = git_status_porcelain(target.path)
+    if status_lines:
+        signature = git_diff_signature(target.path)
+        expected_signature = get_apply_context(target.key).get("signature")
+        if not expected_signature:
+            result = build_action_result(
+                ok=False,
+                action="git.status",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message=(
+                    "Working tree has changes, but no apply context is available. "
+                    "Please re-apply the patch via ACS or commit manually."
+                ),
+                error_kind="unexpected_changes_no_context",
+                code=1,
+                files=get_status_files(status_lines),
+                repo_path=target.path,
+            )
+            record_job_result(job_id, result)
+            return False
+        if signature != expected_signature:
+            result = build_action_result(
+                ok=False,
+                action="git.status",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message="Working tree has unexpected changes. Apply or commit first.",
+                error_kind="git_failed",
+                code=1,
+                files=get_status_files(status_lines),
+                repo_path=target.path,
+            )
+            record_job_result(job_id, result)
+            return False
+        commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
+        add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
+        add_result = build_action_result(
+            ok=add.code == 0,
+            action="git.add",
+            repo=target.key,
+            correlation_id=correlation_id,
+            stdout=add.stdout,
+            stderr=add.stderr,
+            code=add.code,
+            error_kind=None if add.code == 0 else "git_failed",
+            message="Staged changes." if add.code == 0 else combine_output(add).strip(),
+            repo_path=target.path,
+        )
+        record_job_result(job_id, add_result)
+        if add.code != 0:
+            return False
+        staged = run(["git", "diff", "--cached", "--name-only"], cwd=target.path, timeout=30)
+        staged_files = [line.strip() for line in staged.stdout.splitlines() if line.strip()]
+        if not staged_files:
+            result = build_action_result(
+                ok=False,
+                action="git.commit",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message="Nothing to commit",
+                error_kind="nothing_to_commit",
+                code=1,
+                repo_path=target.path,
+            )
+            record_job_result(job_id, result)
+            return False
+        commit = run(["git", "commit", "-m", commit_message], cwd=target.path, timeout=60)
+        commit_ok = commit.code == 0
+        commit_result = build_action_result(
+            ok=commit_ok,
+            action="git.commit",
+            repo=target.key,
+            correlation_id=correlation_id,
+            stdout=commit.stdout,
+            stderr=commit.stderr,
+            code=commit.code,
+            error_kind=None if commit_ok else "git_failed",
+            message="Commit created." if commit_ok else combine_output(commit).strip(),
+            changed=commit_ok,
+            files=staged_files,
+            repo_path=target.path,
+        )
+        record_job_result(job_id, commit_result)
+        if not commit_ok:
+            return False
+    push = run(["git", "push", "-u", "origin", "HEAD"], cwd=target.path, timeout=120)
+    push_ok = push.code == 0
+    push_result = build_action_result(
+        ok=push_ok,
+        action="git.push",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=push.stdout,
+        stderr=push.stderr,
+        code=push.code,
+        error_kind=None if push_ok else "push_failed",
+        message="Push completed." if push_ok else combine_output(push).strip(),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, push_result)
+    if not push_ok:
+        return False
+    pr_title = (req.pr_title or "").strip() or build_default_pr_title(req, target.key)
+    pr_body = (req.pr_body or "").strip() or build_default_pr_body(
+        target.path,
+        correlation_id,
+        req.include_diffstat,
+    )
+    base_branch = (req.base or "main").strip()
+    head_branch, _ = get_git_state(target.path)
+    if not head_branch:
+        result = build_action_result(
+            ok=False,
+            action="gh.pr.create",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Unable to determine head branch for PR creation.",
+            error_kind="git_failed",
+            code=1,
+            repo_path=target.path,
+        )
+        record_job_result(job_id, result)
+        return False
+    pr_cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        pr_title,
+        "--body",
+        pr_body,
+        "--base",
+        base_branch,
+        "--head",
+        head_branch,
+    ]
+    if req.draft:
+        pr_cmd.append("--draft")
+    pr = run(pr_cmd, cwd=target.path, timeout=120)
+    pr_ok = pr.code == 0
+    pr_url = extract_pr_url(pr.stdout or pr.stderr)
+    existing_pr = False
+    if not pr_ok:
+        existing_url = find_existing_pr_url(target.path, head_branch, base_branch)
+        if existing_url:
+            pr_ok = True
+            existing_pr = True
+            pr_url = existing_url
+    pr_result = build_action_result(
+        ok=pr_ok,
+        action="gh.pr.ensure" if existing_pr else "gh.pr.create",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=pr.stdout,
+        stderr=pr.stderr,
+        code=pr.code,
+        error_kind=None if pr_ok else "gh_failed",
+        message="PR already exists." if existing_pr else "PR created." if pr_ok else combine_output(pr).strip(),
+        pr_url=pr_url,
+        repo_path=target.path,
+    )
+    record_job_result(job_id, pr_result)
+    if not pr_ok:
+        return False
+    publish_result = build_action_result(
+        ok=True,
+        action="git.publish",
+        repo=target.key,
+        correlation_id=correlation_id,
+        message="Publish completed.",
+        pr_url=pr_url,
+        code=0,
+        duration_ms=int((time.monotonic() - start) * 1000),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, publish_result)
+    return True
+
+
+def checkout_branch(path: Path, branch_name: str) -> Any:
+    exists = run(
+        ["git", "show-ref", "--verify", f"refs/heads/{branch_name}"],
+        cwd=path,
+        timeout=20,
+    )
+    if exists.code == 0:
+        return run(["git", "checkout", branch_name], cwd=path, timeout=30)
+    return run(["git", "checkout", "-b", branch_name], cwd=path, timeout=30)
+
+
+def generate_branch_name(repo: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    short_id = uuid.uuid4().hex[:6]
+    return f"acs/{repo}-{timestamp}-{short_id}"
+
+
+def build_default_commit_message(repo: str) -> str:
+    session_id = get_apply_context(repo).get("session_id")
+    if session_id:
+        return f"acs: publish {repo} ({session_id})"
+    return f"acs: publish {repo}"
+
+
+def build_default_pr_title(req: PublishReq, repo: str) -> str:
+    return (req.commit_message or "").strip() or build_default_commit_message(repo)
+
+
+def build_default_pr_body(
+    repo_path: Path, correlation_id: str, include_diffstat: bool
+) -> str:
+    summary = "Automated publish via agent-control-surface."
+    body_lines = [summary]
+    if include_diffstat:
+        diffstat = run(["git", "show", "--stat", "--oneline", "-1"], cwd=repo_path, timeout=30)
+        if diffstat.stdout.strip():
+            body_lines.extend(["", "Diffstat:", "```", diffstat.stdout.strip(), "```"])
+    body_lines.extend(
+        [
+            "",
+            f"correlation_id: {correlation_id}",
+            "",
+            "Hinweise:",
+            "- local-only",
+            "- branch-guard aktiv",
+            "- repo allowlist aktiv",
+        ]
+    )
+    return "\n".join(body_lines)
+
+
+def extract_pr_url(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(
+        r"https://github\\.com/[^/\\s]+/[^/\\s]+/pull/\\d+",
+        text,
+    )
+    if not match:
+        return None
+    return match.group(0).rstrip(").,")
+
+
+def find_existing_pr_url(path: Path, head_branch: str, base_branch: str) -> str | None:
+    list_cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--head",
+        head_branch,
+        "--base",
+        base_branch,
+        "--json",
+        "url",
+        "--limit",
+        "1",
+    ]
+    out = run(list_cmd, cwd=path, timeout=30)
+    if out.code != 0:
+        return None
+    try:
+        payload = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, list) and payload:
+        url = payload[0].get("url")
+        if isinstance(url, str) and url:
+            return url
+    return None
 
 
 def get_repo(key: str) -> Repo:
