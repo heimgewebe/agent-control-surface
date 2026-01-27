@@ -265,7 +265,7 @@ Du bekommst:
 
 - /api/jules/prompt (Alias/Wrapper um /api/sessions/new; besserer Fließtext-Entry)
 
-**Definition of Done (Phase 1)**
+**Definition of Done (Phase 1a + 1b)**
 - Prompt kann aus UI abgesendet werden und erzeugt eine Session-ID.
 - Sessions werden lokal archiviert (mind. JSON) unter einem festen Pfad.
 - Diff/Patch kann pulled + angezeigt werden (ohne Auto-Apply).
