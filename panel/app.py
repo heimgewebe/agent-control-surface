@@ -1165,7 +1165,7 @@ def build_default_pr_body(
     return "\n".join(body_lines)
 
 
-def extract_pr_url(text: str) -> str | None:
+def extract_pr_url(text: str | None) -> str | None:
     if not text:
         return None
     match = re.search(
