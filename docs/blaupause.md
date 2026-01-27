@@ -123,13 +123,18 @@ UI
 
 API
 
-POST /api/jules/prompt
+- aktuell implementiert:
 
-    {
-      "repo": "heimgewebe/metarepo",
-      "prompt": "Analysiere den Workflow und härte ihn ab …"
-    }
+  POST /api/sessions/new
 
+- geplante API-Struktur (Ideal):
+
+  POST /api/jules/prompt
+
+      {
+        "repo": "heimgewebe/metarepo",
+        "prompt": "Analysiere den Workflow und härte ihn ab …"
+      }
 Backend
 
 `jules ...` (Agent-spezifisch; für Jules: `jules new <title>` oder äquivalent)
