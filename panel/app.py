@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
-from .logging import log_action
+from .logging import log_action, redact_secrets
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
@@ -302,49 +302,41 @@ def log_action_result(result: ActionResult, job_id: str | None = None) -> None:
     log_action(result.model_dump(), job_id=job_id)
 
 
+def _redact_action_result(r: ActionResult) -> ActionResult:
+    return r.model_copy(update={
+        "stdout": redact_secrets(r.stdout) if r.stdout else r.stdout,
+        "stderr": redact_secrets(r.stderr) if r.stderr else r.stderr,
+        "message": redact_secrets(r.message) if r.message else r.message,
+        "pr_url": redact_secrets(r.pr_url) if r.pr_url else r.pr_url,
+    })
+
+
 def record_job_result(job_id: str, result: ActionResult) -> None:
     # Cap stdout/stderr to avoid excessive memory usage
-    # We use model_copy to avoid mutating the original result object which might be used elsewhere
     updates = {}
     if len(result.stdout) > MAX_STDOUT_CHARS:
         updates["stdout"] = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
     if len(result.stderr) > MAX_STDOUT_CHARS:
         updates["stderr"] = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
 
-    stored_result = result.model_copy(update=updates) if updates else result
+    # Create truncated copy first (if needed), then redacted copy
+    truncated_result = result.model_copy(update=updates) if updates else result
 
-    # Dump the result to JSON, but ensure secrets are redacted in the log line
-    # (The JobState.log_lines are exposed via API in log_tail)
-    raw_dump = stored_result.model_dump()
-    # We use log_action_result (logging.py) logic manually here or just rely on the fact that
-    # log_action_result redacts before writing to disk, BUT log_lines is in-memory.
-    # We must redact before storing in memory if we want the API output to be safe.
-    # panel.logging.redact_record handles dicts recursively.
-    from .logging import redact_secrets
+    # Create redacted copy for in-memory storage (API safety)
+    safe_result = _redact_action_result(truncated_result)
 
-    # Redact fields in stored_result that might contain secrets (stdout, stderr, message)
-    # We modify the copy 'stored_result' so original 'result' is untouched (if caller needs it).
-    if stored_result.stdout:
-        stored_result.stdout = redact_secrets(stored_result.stdout)
-    if stored_result.stderr:
-        stored_result.stderr = redact_secrets(stored_result.stderr)
-    if stored_result.message:
-        stored_result.message = redact_secrets(stored_result.message)
-    if stored_result.pr_url:
-        stored_result.pr_url = redact_secrets(stored_result.pr_url)
-
-    line = json.dumps(stored_result.model_dump(), ensure_ascii=False)
+    line = json.dumps(safe_result.model_dump(), ensure_ascii=False)
     if len(line) > MAX_LOG_LINE_CHARS:
         line = line[:MAX_LOG_LINE_CHARS] + "... (truncated)"
 
     with JOB_LOCK:
         job_state = JOBS.get(job_id)
         if job_state:
-            job_state.results.append(stored_result)
+            job_state.results.append(safe_result)
             job_state.log_lines.append(line)
             if len(job_state.log_lines) > MAX_JOB_LOG_LINES:
                 job_state.log_lines.pop(0)
-    log_action_result(stored_result, job_id=job_id)
+    log_action_result(safe_result, job_id=job_id)
 
 
 def set_job_status(job_id: str, status: str) -> None:
