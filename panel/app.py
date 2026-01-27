@@ -89,10 +89,6 @@ class ActionResult(BaseModel):
     correlation_id: str
 
 
-# Fix forward references for JobState (which uses ActionResult)
-JobState.model_rebuild()
-
-
 class PublishReq(BaseModel):
     repo: str
     branch: str | None = None
@@ -113,6 +109,10 @@ class JobStatusResponse(BaseModel):
     status: str
     results: list[ActionResult]
     log_tail: str
+
+
+# Fix forward references for JobState (which uses ActionResult)
+JobState.model_rebuild()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -312,6 +312,26 @@ def record_job_result(job_id: str, result: ActionResult) -> None:
         updates["stderr"] = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
 
     stored_result = result.model_copy(update=updates) if updates else result
+
+    # Dump the result to JSON, but ensure secrets are redacted in the log line
+    # (The JobState.log_lines are exposed via API in log_tail)
+    raw_dump = stored_result.model_dump()
+    # We use log_action_result (logging.py) logic manually here or just rely on the fact that
+    # log_action_result redacts before writing to disk, BUT log_lines is in-memory.
+    # We must redact before storing in memory if we want the API output to be safe.
+    # panel.logging.redact_record handles dicts recursively.
+    from .logging import redact_secrets
+
+    # Redact fields in stored_result that might contain secrets (stdout, stderr, message)
+    # We modify the copy 'stored_result' so original 'result' is untouched (if caller needs it).
+    if stored_result.stdout:
+        stored_result.stdout = redact_secrets(stored_result.stdout)
+    if stored_result.stderr:
+        stored_result.stderr = redact_secrets(stored_result.stderr)
+    if stored_result.message:
+        stored_result.message = redact_secrets(stored_result.message)
+    if stored_result.pr_url:
+        stored_result.pr_url = redact_secrets(stored_result.pr_url)
 
     line = json.dumps(stored_result.model_dump(), ensure_ascii=False)
     if len(line) > MAX_LOG_LINE_CHARS:
