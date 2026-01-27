@@ -127,6 +127,13 @@ API
 
   POST /api/sessions/new
 
+- Beispiel (aktueller Stand):
+
+      {
+        "repo": "metarepo",
+        "title": "Harte actions versions in integrity workflow"
+      }
+
 - geplante API-Struktur (Ideal):
 
   POST /api/jules/prompt
@@ -167,9 +174,7 @@ Optional später:
 - Kurzsummary
 - Tags („security“, „wgx“, „ci“)
 
-⸻
-
-Ebene C – Ergebnis holen (asynchron)
+### Ebene C – Ergebnis holen (asynchron)
 
 UI
 
@@ -206,7 +211,6 @@ PR Wizard
 - Push
 - PR vorbereiten (kein Auto-Create!)
 
-⸻
 
 ## „Memory“ – ehrlich getrennt
 
@@ -250,13 +254,18 @@ Du bekommst:
 
 ## Minimaler Umsetzungsplan (realistisch)
 
-### Phase 1 (jetzt)
+### Phase 1a (jetzt: Ist stabilisieren)
 
-- /api/jules/prompt
 - Session-Archiv (JSON/MD lokal)
 - UI-Textarea + Button
+- Prompt aus UI erzeugt eine Session via bestehendem Endpoint:
+  - POST /api/sessions/new
 
-**Definition of Done (Phase 1)**
+### Phase 1b (danach: Soll-API einführen)
+
+- /api/jules/prompt (Alias/Wrapper um /api/sessions/new; besserer Fließtext-Entry)
+
+**Definition of Done (Phase 1a + 1b)**
 - Prompt kann aus UI abgesendet werden und erzeugt eine Session-ID.
 - Sessions werden lokal archiviert (mind. JSON) unter einem festen Pfad.
 - Diff/Patch kann pulled + angezeigt werden (ohne Auto-Apply).
