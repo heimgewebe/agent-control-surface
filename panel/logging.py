@@ -78,4 +78,5 @@ def redact_secrets(text: str) -> str:
             redacted = redacted.replace(env_value, "[redacted]")
     redacted = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[redacted]", redacted)
     redacted = re.sub(r"github_pat_[A-Za-z0-9_]{20,}", "[redacted]", redacted)
+    redacted = re.sub(r"(token|access_token)=[^&\s]+", r"\1=[redacted]", redacted)
     return redacted

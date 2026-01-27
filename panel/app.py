@@ -30,6 +30,9 @@ JOBS: dict[str, "JobState"] = {}
 JOB_CREATED_AT: dict[str, float] = {}
 JOB_MAX_AGE_SECONDS = 24 * 60 * 60
 JOB_MAX_ENTRIES = 200
+MAX_JOB_LOG_LINES = 1000
+MAX_LOG_LINE_CHARS = 4000
+MAX_STDOUT_CHARS = 50000
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
 
 
@@ -84,6 +87,14 @@ class ActionResult(BaseModel):
     ts: str
     duration_ms: int | None = None
     correlation_id: str
+
+
+# Fix forward references for JobState (which uses ActionResult)
+try:
+    JobState.model_rebuild()
+except AttributeError:
+    # Pydantic v1 fallback
+    JobState.update_forward_refs()
 
 
 class PublishReq(BaseModel):
@@ -296,12 +307,23 @@ def log_action_result(result: ActionResult, job_id: str | None = None) -> None:
 
 
 def record_job_result(job_id: str, result: ActionResult) -> None:
+    # Cap stdout/stderr to avoid excessive memory usage
+    if len(result.stdout) > MAX_STDOUT_CHARS:
+        result.stdout = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
+    if len(result.stderr) > MAX_STDOUT_CHARS:
+        result.stderr = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
+
     line = json.dumps(result.model_dump(), ensure_ascii=False)
+    if len(line) > MAX_LOG_LINE_CHARS:
+        line = line[:MAX_LOG_LINE_CHARS] + "... (truncated)"
+
     with JOB_LOCK:
         job_state = JOBS.get(job_id)
         if job_state:
             job_state.results.append(result)
             job_state.log_lines.append(line)
+            if len(job_state.log_lines) > MAX_JOB_LOG_LINES:
+                job_state.log_lines.pop(0)
     log_action_result(result, job_id=job_id)
 
 
@@ -369,7 +391,7 @@ def is_valid_branch_name(name: str) -> bool:
         return False
     if "//" in name or "/." in name or "./" in name:
         return False
-    return bool(re.fullmatch(r"[A-Za-z0-9._/\\-]+", name))
+    return bool(re.fullmatch(r"[A-Za-z0-9._/-]+", name))
 
 
 def get_status_files(lines: list[str]) -> list[str]:
@@ -547,7 +569,7 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
             repo=target.key,
             correlation_id=correlation_id,
             message="Patch is empty",
-            error_kind="git_failed",
+            error_kind="invalid_input",
             code=1,
             files=files or None,
             repo_path=target.path,
@@ -842,7 +864,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
             repo=target.key,
             correlation_id=correlation_id,
             message="Invalid branch name",
-            error_kind="git_failed",
+            error_kind="invalid_input",
             code=1,
             repo_path=target.path,
         )
@@ -1147,7 +1169,7 @@ def extract_pr_url(text: str) -> str | None:
     if not text:
         return None
     match = re.search(
-        r"https://github\\.com/[^/\\s]+/[^/\\s]+/pull/\\d+",
+        r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
         text,
     )
     if not match:
