@@ -407,6 +407,10 @@
         const status = statusMap[data.status] || { text: data.status, state: "warn" };
         setPublishStatus(status.text, status.state);
         const results = data.results || [];
+        const branch = results.find((res) => res.branch)?.branch;
+        if (branch) {
+          document.getElementById("branch").value = branch;
+        }
         const prUrl = results.find((res) => res.pr_url)?.pr_url;
         if (prUrl) {
           document.getElementById("publishPrUrl").innerHTML = `<a href="${prUrl}" target="_blank">${prUrl}</a>`;

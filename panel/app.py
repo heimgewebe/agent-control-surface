@@ -171,7 +171,7 @@ def api_patch_apply_json(req: ApplyPatchReq) -> JSONResponse:
 @app.post("/api/git/branch", response_class=PlainTextResponse)
 def api_git_branch(req: GitBranchReq) -> str:
     target = get_repo(req.repo)
-    if not req.name or " " in req.name:
+    if not is_valid_branch_name(req.name):
         raise HTTPException(status_code=400, detail="Invalid branch name")
     out = run(["git", "checkout", "-b", req.name], cwd=target.path, timeout=30)
     return combine_output(out)
@@ -360,6 +360,18 @@ def git_status_porcelain(path: Path) -> list[str]:
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
+def is_valid_branch_name(name: str) -> bool:
+    if not name or " " in name:
+        return False
+    if name.startswith("-") or name.endswith(".lock"):
+        return False
+    if ".." in name or "@" in name or "~" in name or ":" in name or "\\" in name:
+        return False
+    if "//" in name or "/." in name or "./" in name:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._/\\-]+", name))
+
+
 def get_status_files(lines: list[str]) -> list[str]:
     files: list[str] = []
     for line in lines:
@@ -429,6 +441,19 @@ def build_action_result(
         duration_ms=duration_ms,
         correlation_id=correlation_id,
     )
+
+
+def get_apply_context(repo: str) -> dict[str, str]:
+    with JOB_LOCK:
+        return dict(LAST_APPLY_CONTEXT.get(repo, {}))
+
+
+def set_apply_context(repo: str, signature: str, session_id: str) -> None:
+    with JOB_LOCK:
+        LAST_APPLY_CONTEXT[repo] = {
+            "signature": signature,
+            "session_id": session_id,
+        }
 
 
 def format_action_result(result: ActionResult) -> str:
@@ -605,10 +630,7 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
     )
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
-    LAST_APPLY_CONTEXT[target.key] = {
-        "signature": after_diff,
-        "session_id": req.session_id or "",
-    }
+    set_apply_context(target.key, after_diff, req.session_id or "")
     return result, 200
 
 
@@ -813,7 +835,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
         record_job_result(job_id, result)
         return False
     branch_name = (req.branch or "").strip() or generate_branch_name(target.key)
-    if not branch_name or " " in branch_name:
+    if not is_valid_branch_name(branch_name):
         result = build_action_result(
             ok=False,
             action="git.branch",
@@ -893,7 +915,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
     status_lines = git_status_porcelain(target.path)
     if status_lines:
         signature = git_diff_signature(target.path)
-        expected_signature = LAST_APPLY_CONTEXT.get(target.key, {}).get("signature")
+        expected_signature = get_apply_context(target.key).get("signature")
         if not expected_signature:
             result = build_action_result(
                 ok=False,
@@ -1041,7 +1063,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
             pr_url = existing_url
     pr_result = build_action_result(
         ok=pr_ok,
-        action="gh.pr.create",
+        action="gh.pr.ensure" if existing_pr else "gh.pr.create",
         repo=target.key,
         correlation_id=correlation_id,
         stdout=pr.stdout,
@@ -1088,7 +1110,7 @@ def generate_branch_name(repo: str) -> str:
 
 
 def build_default_commit_message(repo: str) -> str:
-    session_id = LAST_APPLY_CONTEXT.get(repo, {}).get("session_id")
+    session_id = get_apply_context(repo).get("session_id")
     if session_id:
         return f"acs: publish {repo} ({session_id})"
     return f"acs: publish {repo}"
