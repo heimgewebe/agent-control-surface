@@ -366,8 +366,25 @@
           if (!publishJobId) return;
           try {
             const res = await fetch(`/api/jobs/${publishJobId}`);
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || "Job failed");
+            let data = null;
+            let errorText = "";
+            const contentType = res.headers.get("Content-Type") || "";
+            if (contentType.includes("application/json")) {
+              try {
+                data = await res.json();
+              } catch (err) {
+                errorText = await res.text();
+              }
+            } else {
+              errorText = await res.text();
+            }
+            if (!res.ok) {
+              const message = data?.detail || errorText || "Job failed";
+              throw new Error(message);
+            }
+            if (!data) {
+              throw new Error("Job failed: invalid response");
+            }
             publishData = data;
             renderPublishJob(data);
             if (data.status === "done" || data.status === "error") {

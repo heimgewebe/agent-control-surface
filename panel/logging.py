@@ -43,12 +43,9 @@ def resolve_daily_log_path() -> Path:
 
 def log_action(record: dict[str, Any], *, job_id: str | None = None) -> None:
     config = resolve_action_log_config()
-    if not config.enabled or config.path is None:
-        if not config.enabled:
-            return
-        log_path = resolve_daily_log_path()
-    else:
-        log_path = config.path
+    if not config.enabled:
+        return
+    log_path = config.path or resolve_daily_log_path()
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {

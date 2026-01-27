@@ -36,7 +36,7 @@ LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
 class JobState(BaseModel):
     job_id: str
     status: str
-    results: list[ActionResult] = Field(default_factory=list)
+    results: list["ActionResult"] = Field(default_factory=list)
     log_lines: list[str] = Field(default_factory=list)
 
 
