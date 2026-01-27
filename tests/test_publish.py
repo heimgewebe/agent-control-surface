@@ -1,5 +1,6 @@
 from unittest.mock import patch, MagicMock
-from panel.app import extract_pr_url, find_existing_pr_url, Path
+from panel.app import extract_pr_url, find_existing_pr_url
+from pathlib import Path
 import json
 
 def test_extract_pr_url():

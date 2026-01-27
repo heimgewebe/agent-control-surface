@@ -78,5 +78,6 @@ def redact_secrets(text: str) -> str:
             redacted = redacted.replace(env_value, "[redacted]")
     redacted = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[redacted]", redacted)
     redacted = re.sub(r"github_pat_[A-Za-z0-9_]{20,}", "[redacted]", redacted)
-    redacted = re.sub(r"(token|access_token)=[^&\s]+", r"\1=[redacted]", redacted)
+    # Redact token= and access_token= in any text (URL or not), but avoid matching my_token=
+    redacted = re.sub(r"(?<![A-Za-z0-9_])(token|access_token)=[^&\s]+", r"\1=[redacted]", redacted)
     return redacted

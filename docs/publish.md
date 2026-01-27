@@ -36,7 +36,7 @@ Job abfragen:
 curl -sS http://127.0.0.1:8099/api/jobs/8d2f0f02-8a7a-4c44-a37a-0b111e0c8e6c
 ```
 
-Hinweis: Das Feld `log_tail` enthält die letzten Logzeilen als String. Lange Logs oder Ausgaben werden serverseitig gekürzt (max. 1000 Zeilen, max. 4KB pro Zeile, max. 50KB stdout/stderr in `results`).
+Hinweis: Das Feld `log_tail` enthält die letzten Logzeilen als String. Lange Logs oder Ausgaben werden serverseitig gekürzt (max. 1000 Zeilen, max. 4000 Zeichen pro Zeile (≈ 4 KB bei ASCII/UTF-8), max. 50.000 Zeichen stdout/stderr in `results`).
 
 Erfolgsantwort (gekürzt):
 

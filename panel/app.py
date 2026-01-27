@@ -90,11 +90,7 @@ class ActionResult(BaseModel):
 
 
 # Fix forward references for JobState (which uses ActionResult)
-try:
-    JobState.model_rebuild()
-except AttributeError:
-    # Pydantic v1 fallback
-    JobState.update_forward_refs()
+JobState.model_rebuild()
 
 
 class PublishReq(BaseModel):
@@ -308,23 +304,27 @@ def log_action_result(result: ActionResult, job_id: str | None = None) -> None:
 
 def record_job_result(job_id: str, result: ActionResult) -> None:
     # Cap stdout/stderr to avoid excessive memory usage
+    # We use model_copy to avoid mutating the original result object which might be used elsewhere
+    updates = {}
     if len(result.stdout) > MAX_STDOUT_CHARS:
-        result.stdout = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
+        updates["stdout"] = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
     if len(result.stderr) > MAX_STDOUT_CHARS:
-        result.stderr = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
+        updates["stderr"] = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
 
-    line = json.dumps(result.model_dump(), ensure_ascii=False)
+    stored_result = result.model_copy(update=updates) if updates else result
+
+    line = json.dumps(stored_result.model_dump(), ensure_ascii=False)
     if len(line) > MAX_LOG_LINE_CHARS:
         line = line[:MAX_LOG_LINE_CHARS] + "... (truncated)"
 
     with JOB_LOCK:
         job_state = JOBS.get(job_id)
         if job_state:
-            job_state.results.append(result)
+            job_state.results.append(stored_result)
             job_state.log_lines.append(line)
             if len(job_state.log_lines) > MAX_JOB_LOG_LINES:
                 job_state.log_lines.pop(0)
-    log_action_result(result, job_id=job_id)
+    log_action_result(stored_result, job_id=job_id)
 
 
 def set_job_status(job_id: str, status: str) -> None:
