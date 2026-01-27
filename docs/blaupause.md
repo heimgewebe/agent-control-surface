@@ -174,7 +174,7 @@ UI
 
 API
 
-GET /api/jules/sessions/{id}/diff
+GET /api/sessions/{session_id}/diff
 
 Backend
 
