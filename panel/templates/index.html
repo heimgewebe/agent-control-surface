@@ -135,6 +135,28 @@
         <button onclick="gitPush()">Push</button>
         <button onclick="gitPreparePr()">Prepare PR</button>
       </div>
+      <div class="row">
+        <input id="prTitle" placeholder="PR title (optional)" style="min-width: 360px" />
+        <input id="prBase" placeholder="Base branch (default: main)" style="min-width: 220px" />
+        <label>
+          <input type="checkbox" id="prDraft" checked />
+          Draft PR
+        </label>
+        <label>
+          <input type="checkbox" id="includeDiffstat" checked />
+          Include diffstat
+        </label>
+      </div>
+      <div class="row">
+        <textarea id="prBody" placeholder="PR body (optional)" style="min-height: 120px"></textarea>
+      </div>
+      <div class="row">
+        <button onclick="publish()">Publish (Push + PR)</button>
+        <button onclick="downloadPublishLog()" id="publishDownload" disabled>Download publish log</button>
+      </div>
+      <div id="publishStatus" class="status"></div>
+      <div id="publishPrUrl" class="small"></div>
+      <pre id="publishOut"></pre>
       <pre id="gitOut"></pre>
     </section>
 
@@ -185,16 +207,22 @@
         const body = { repo: repo(), patch, three_way: threeWay };
         if (sessionId) body.session_id = sessionId;
         try {
-          const res = await fetch("/api/patch/apply?response_format=json", {
+          const res = await fetch("/api/patch/apply.json", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
           if (!res.ok) {
             const errorText = await res.text();
-            const [summary, ...rest] = errorText.split("\n");
+            let summary = errorText.split("\n")[0];
+            try {
+              const parsed = JSON.parse(errorText);
+              summary = parsed.message || parsed.error_kind || summary;
+            } catch (err) {
+              // ignore JSON parse errors
+            }
             setApplyStatus(`❌ Patch fehlgeschlagen: ${summary}`, "error");
-            document.getElementById("applyOut").textContent = rest.join("\n").trim();
+            document.getElementById("applyOut").textContent = errorText;
             return;
           }
           const contentType = res.headers.get("Content-Type") || "";
@@ -208,7 +236,7 @@
           const data = await res.json();
           const status = formatApplyStatus(data);
           setApplyStatus(status.text, status.state);
-          document.getElementById("applyOut").textContent = data.details || "";
+          document.getElementById("applyOut").textContent = data.stdout || "";
         } catch (error) {
           setApplyStatus(`❌ Patch fehlgeschlagen: ${error.message}`, "error");
           document.getElementById("applyOut").textContent = "";
@@ -260,7 +288,7 @@
         status.className = `status ${state || ""}`.trim();
       }
       function formatApplyStatus(data) {
-        const filesChanged = data?.meta?.files_in_patch;
+        const filesChanged = data?.files?.length;
         if (data.ok && data.changed) {
           const suffix = filesChanged ? ` (${filesChanged} Dateien im Patch)` : "";
           return { text: `✔ Patch angewendet${suffix}.`, state: "success" };
@@ -268,8 +296,137 @@
         if (data.ok && !data.changed) {
           return { text: "⚠ Patch angewendet, aber keine Änderungen.", state: "warn" };
         }
-        const summary = (data.details || "Unbekannter Fehler").split("\n")[0];
+        const summary = (data.message || "Unbekannter Fehler").split("\n")[0];
         return { text: `❌ Patch fehlgeschlagen: ${summary}`, state: "error" };
+      }
+
+      let publishJobId = null;
+      let publishPoll = null;
+      let publishData = null;
+
+      async function publish() {
+        const payload = { repo: repo() };
+        const branchName = document.getElementById("branch").value.trim();
+        const commitMessage = document.getElementById("msg").value.trim();
+        const prTitle = document.getElementById("prTitle").value.trim();
+        const prBody = document.getElementById("prBody").value.trim();
+        const prBase = document.getElementById("prBase").value.trim();
+        const prDraft = document.getElementById("prDraft").checked;
+        const includeDiffstat = document.getElementById("includeDiffstat").checked;
+        if (branchName) payload.branch = branchName;
+        if (commitMessage) payload.commit_message = commitMessage;
+        if (prTitle) payload.pr_title = prTitle;
+        if (prBody) payload.pr_body = prBody;
+        if (prBase) payload.base = prBase;
+        payload.draft = prDraft;
+        payload.include_diffstat = includeDiffstat;
+        setPublishStatus("Publish gestartet…", "warn");
+        document.getElementById("publishPrUrl").textContent = "";
+        document.getElementById("publishOut").textContent = "";
+        document.getElementById("publishDownload").disabled = true;
+        try {
+          const res = await fetch("/api/git/publish", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || "Publish failed");
+          }
+          publishJobId = data.job_id;
+          publishData = null;
+          setPublishStatus(`Job queued (${data.job_id})`, "warn");
+          startPublishPolling();
+        } catch (error) {
+          setPublishStatus(`❌ Publish fehlgeschlagen: ${error.message}`, "error");
+        }
+      }
+
+      function startPublishPolling() {
+        if (publishPoll) {
+          clearInterval(publishPoll);
+        }
+        publishPoll = setInterval(async () => {
+          if (!publishJobId) return;
+          try {
+            const res = await fetch(`/api/jobs/${publishJobId}`);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Job failed");
+            publishData = data;
+            renderPublishJob(data);
+            if (data.status === "done" || data.status === "error") {
+              clearInterval(publishPoll);
+              publishPoll = null;
+            }
+          } catch (error) {
+            setPublishStatus(`⚠️ Publish polling failed: ${error.message}`, "warn");
+          }
+        }, 2000);
+      }
+
+      function renderPublishJob(data) {
+        const statusMap = {
+          queued: { text: "Publish queued", state: "warn" },
+          running: { text: "Publish läuft…", state: "warn" },
+          done: { text: "Publish abgeschlossen", state: "success" },
+          error: { text: "Publish fehlgeschlagen", state: "error" },
+        };
+        const status = statusMap[data.status] || { text: data.status, state: "warn" };
+        setPublishStatus(status.text, status.state);
+        const results = data.results || [];
+        const prUrl = results.find((res) => res.pr_url)?.pr_url;
+        if (prUrl) {
+          document.getElementById("publishPrUrl").innerHTML = `<a href="${prUrl}" target="_blank">${prUrl}</a>`;
+        }
+        document.getElementById("publishOut").textContent = formatPublishResults(results, data.log_tail);
+        document.getElementById("publishDownload").disabled = !results.length;
+      }
+
+      function formatPublishResults(results, logTail) {
+        const parts = results.map((res) => {
+          const header = `${res.ok ? "✔" : "❌"} ${res.action}`;
+          const summary = res.message || "";
+          const error = res.error_kind ? `error_kind=${res.error_kind}` : "";
+          const stdout = truncateOutput(res.stdout);
+          const stderr = truncateOutput(res.stderr);
+          const block = [];
+          if (summary) block.push(summary);
+          if (error) block.push(error);
+          if (stdout) block.push(`stdout:\n${stdout}`);
+          if (stderr) block.push(`stderr:\n${stderr}`);
+          return [header, ...block].join("\n");
+        });
+        if (logTail) {
+          parts.push(`\nLog tail:\n${logTail}`);
+        }
+        return parts.join("\n\n");
+      }
+
+      function truncateOutput(text) {
+        if (!text) return "";
+        const max = 2000;
+        if (text.length <= max) return text;
+        return `${text.slice(0, max)}\n… (truncated)`;
+      }
+
+      function downloadPublishLog() {
+        if (!publishData) return;
+        const blob = new Blob([JSON.stringify(publishData, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `acs-publish-${publishJobId || "log"}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function setPublishStatus(text, state) {
+        const status = document.getElementById("publishStatus");
+        status.textContent = text;
+        status.className = `status ${state || ""}`.trim();
       }
     </script>
   </body>

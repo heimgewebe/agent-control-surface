@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_LOG_PATH = Path("~/.local/state/agent-control-surface/actions.log").expanduser()
+DEFAULT_LOG_DIR = Path("~/.local/state/agent-control-surface/logs").expanduser()
+SENSITIVE_ENV_KEYS = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "COHERE_API_KEY",
+]
 
 
 @dataclass(frozen=True)
@@ -17,28 +24,57 @@ class ActionLogConfig:
 
 
 def resolve_action_log_config() -> ActionLogConfig:
-    env_value = os.getenv("ACS_ACTION_LOG")
-    if not env_value:
-        return ActionLogConfig(enabled=False, path=None)
-    normalized = env_value.strip().lower()
-    if normalized in {"0", "false", "no", "off"}:
-        return ActionLogConfig(enabled=False, path=None)
-    if normalized in {"1", "true", "yes", "on"}:
-        return ActionLogConfig(enabled=True, path=DEFAULT_LOG_PATH)
-    return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
+    env_value = os.getenv("ACS_ACTION_LOG", "").strip()
+    if env_value:
+        normalized = env_value.lower()
+        if normalized in {"0", "false", "no", "off"}:
+            return ActionLogConfig(enabled=False, path=None)
+        if normalized not in {"1", "true", "yes", "on"}:
+            return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
+    return ActionLogConfig(enabled=True, path=None)
 
 
-def log_action(record: dict[str, Any]) -> None:
+def resolve_daily_log_path() -> Path:
+    date_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return DEFAULT_LOG_DIR / f"{date_tag}.jsonl"
+
+
+def log_action(record: dict[str, Any], *, job_id: str | None = None) -> None:
     config = resolve_action_log_config()
     if not config.enabled or config.path is None:
-        return
+        if not config.enabled:
+            return
+        log_path = resolve_daily_log_path()
+    else:
+        log_path = config.path
     try:
-        config.path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            **record,
+            **redact_record(record),
         }
-        with config.path.open("a", encoding="utf-8") as handle:
+        if job_id:
+            payload["job_id"] = job_id
+        with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError:
         return
+
+
+def redact_record(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: redact_record(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [redact_record(item) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value)
+    return value
+
+
+def redact_secrets(text: str) -> str:
+    redacted = text
+    for key in SENSITIVE_ENV_KEYS:
+        env_value = os.getenv(key)
+        if env_value:
+            redacted = redacted.replace(env_value, "[redacted]")
+    return redacted
