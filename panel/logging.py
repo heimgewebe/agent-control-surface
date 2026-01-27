@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,13 +26,14 @@ class ActionLogConfig:
 
 def resolve_action_log_config() -> ActionLogConfig:
     env_value = os.getenv("ACS_ACTION_LOG", "").strip()
-    if env_value:
-        normalized = env_value.lower()
-        if normalized in {"0", "false", "no", "off"}:
-            return ActionLogConfig(enabled=False, path=None)
-        if normalized not in {"1", "true", "yes", "on"}:
-            return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
-    return ActionLogConfig(enabled=True, path=None)
+    if not env_value:
+        return ActionLogConfig(enabled=False, path=None)
+    normalized = env_value.lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return ActionLogConfig(enabled=False, path=None)
+    if normalized in {"1", "true", "yes", "on"}:
+        return ActionLogConfig(enabled=True, path=None)
+    return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
 
 
 def resolve_daily_log_path() -> Path:
@@ -77,4 +79,6 @@ def redact_secrets(text: str) -> str:
         env_value = os.getenv(key)
         if env_value:
             redacted = redacted.replace(env_value, "[redacted]")
+    redacted = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[redacted]", redacted)
+    redacted = re.sub(r"github_pat_[A-Za-z0-9_]{20,}", "[redacted]", redacted)
     return redacted

@@ -330,9 +330,24 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = await res.json();
+          let data = null;
+          let errorText = "";
+          const contentType = res.headers.get("Content-Type") || "";
+          if (contentType.includes("application/json")) {
+            try {
+              data = await res.json();
+            } catch (err) {
+              errorText = await res.text();
+            }
+          } else {
+            errorText = await res.text();
+          }
           if (!res.ok) {
-            throw new Error(data.detail || "Publish failed");
+            const message = data?.detail || errorText || "Publish failed";
+            throw new Error(message);
+          }
+          if (!data) {
+            throw new Error("Publish failed: invalid response");
           }
           publishJobId = data.job_id;
           publishData = null;

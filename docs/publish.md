@@ -2,6 +2,8 @@
 
 Dieses Dokument zeigt ein paar **Smoke-Curls** für die neue Publish-API.
 
+Logging ist standardmäßig deaktiviert. Aktivieren via `ACS_ACTION_LOG=1` (oder ein eigener Pfad mit `ACS_ACTION_LOG=/path/log.jsonl`).
+
 ## Beispiel: Erfolg
 
 ```bash

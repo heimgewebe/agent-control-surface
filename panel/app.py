@@ -605,11 +605,10 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
     )
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
-    if changed:
-        LAST_APPLY_CONTEXT[target.key] = {
-            "signature": after_diff,
-            "session_id": req.session_id or "",
-        }
+    LAST_APPLY_CONTEXT[target.key] = {
+        "signature": after_diff,
+        "session_id": req.session_id or "",
+    }
     return result, 200
 
 
@@ -1033,6 +1032,13 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
     pr = run(pr_cmd, cwd=target.path, timeout=120)
     pr_ok = pr.code == 0
     pr_url = extract_pr_url(pr.stdout or pr.stderr)
+    existing_pr = False
+    if not pr_ok:
+        existing_url = find_existing_pr_url(target.path, head_branch, base_branch)
+        if existing_url:
+            pr_ok = True
+            existing_pr = True
+            pr_url = existing_url
     pr_result = build_action_result(
         ok=pr_ok,
         action="gh.pr.create",
@@ -1042,7 +1048,7 @@ def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
         stderr=pr.stderr,
         code=pr.code,
         error_kind=None if pr_ok else "gh_failed",
-        message="PR created." if pr_ok else combine_output(pr).strip(),
+        message="PR already exists." if existing_pr else "PR created." if pr_ok else combine_output(pr).strip(),
         pr_url=pr_url,
         repo_path=target.path,
     )
@@ -1125,6 +1131,34 @@ def extract_pr_url(text: str) -> str | None:
     if not match:
         return None
     return match.group(0).rstrip(").,")
+
+
+def find_existing_pr_url(path: Path, head_branch: str, base_branch: str) -> str | None:
+    list_cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--head",
+        head_branch,
+        "--base",
+        base_branch,
+        "--json",
+        "url",
+        "--limit",
+        "1",
+    ]
+    out = run(list_cmd, cwd=path, timeout=30)
+    if out.code != 0:
+        return None
+    try:
+        payload = json.loads(out.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, list) and payload:
+        url = payload[0].get("url")
+        if isinstance(url, str) and url:
+            return url
+    return None
 
 
 def get_repo(key: str) -> Repo:
