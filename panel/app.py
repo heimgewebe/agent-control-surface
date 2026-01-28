@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -89,8 +89,7 @@ class ActionResult(BaseModel):
     correlation_id: str
 
 
-class PublishReq(BaseModel):
-    repo: str
+class PublishOptions(BaseModel):
     branch: str | None = None
     commit_message: str | None = None
     pr_title: str | None = None
@@ -243,7 +242,7 @@ def api_git_pr_prepare(repo: str = Query(...)) -> str:
 
 
 @app.post("/api/git/publish", response_class=JSONResponse)
-def api_git_publish(req: PublishReq) -> JSONResponse:
+def api_git_publish(repo: str = Query(...), req: PublishOptions = Body(default=PublishOptions())) -> JSONResponse:
     correlation_id = new_correlation_id()
     job_id = str(uuid.uuid4())
     job_state = JobState(job_id=job_id, status="queued")
@@ -251,7 +250,7 @@ def api_git_publish(req: PublishReq) -> JSONResponse:
         purge_jobs_locked()
         JOBS[job_id] = job_state
         JOB_CREATED_AT[job_id] = time.time()
-    JOB_EXECUTOR.submit(run_publish_job, job_id, correlation_id, req)
+    JOB_EXECUTOR.submit(run_publish_job, job_id, correlation_id, repo, req)
     payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
     return JSONResponse(payload.model_dump(), status_code=202)
 
@@ -833,16 +832,16 @@ def push_action(req: GitPushReq) -> tuple[ActionResult, int]:
     return result, 200 if ok else 500
 
 
-def run_publish_job(job_id: str, correlation_id: str, req: PublishReq) -> None:
+def run_publish_job(job_id: str, correlation_id: str, repo: str, req: PublishOptions) -> None:
     set_job_status(job_id, "running")
     ok = False
     try:
-        ok = execute_publish(job_id, correlation_id, req)
+        ok = execute_publish(job_id, correlation_id, repo, req)
     except Exception as exc:
         result = build_action_result(
             ok=False,
             action="git.publish",
-            repo=req.repo,
+            repo=repo,
             correlation_id=correlation_id,
             message=str(exc),
             error_kind="internal",
@@ -852,15 +851,15 @@ def run_publish_job(job_id: str, correlation_id: str, req: PublishReq) -> None:
     set_job_status(job_id, "done" if ok else "error")
 
 
-def execute_publish(job_id: str, correlation_id: str, req: PublishReq) -> bool:
+def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOptions) -> bool:
     start = time.monotonic()
     try:
-        target = get_repo(req.repo)
+        target = get_repo(repo)
     except HTTPException as exc:
         result = build_action_result(
             ok=False,
             action="git.publish",
-            repo=req.repo,
+            repo=repo,
             correlation_id=correlation_id,
             message=str(exc.detail),
             error_kind="invalid_repo",
@@ -1150,7 +1149,7 @@ def build_default_commit_message(repo: str) -> str:
     return f"acs: publish {repo}"
 
 
-def build_default_pr_title(req: PublishReq, repo: str) -> str:
+def build_default_pr_title(req: PublishOptions, repo: str) -> str:
     return (req.commit_message or "").strip() or build_default_commit_message(repo)
 
 

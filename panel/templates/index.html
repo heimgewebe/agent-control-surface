@@ -76,6 +76,7 @@
 
     <label for="repo">Repo</label>
     <select id="repo">
+      <option value="">-- Repo auswählen --</option>
       {% for repo in repos %}
       <option value="{{ repo.key }}">{{ repo.display }}</option>
       {% endfor %}
@@ -85,8 +86,8 @@
       <h2>Sessions</h2>
       <div class="row">
         <input id="title" placeholder="New session title" style="min-width: 260px" />
-        <button onclick="newSession()">New session</button>
-        <button onclick="listSessions()">List sessions</button>
+        <button onclick="newSession()" data-repo-required="true">New session</button>
+        <button onclick="listSessions()" data-repo-required="true">List sessions</button>
       </div>
       <pre id="sessions"></pre>
     </section>
@@ -95,9 +96,9 @@
       <h2>Diff</h2>
       <div class="row">
         <input id="sessionId" placeholder="Session ID" style="min-width: 260px" />
-        <button onclick="showDiff()">Show diff</button>
+        <button onclick="showDiff()" data-repo-required="true">Show diff</button>
         <button onclick="copyToClipboard('diff')">Copy diff</button>
-        <button onclick="downloadDiff()">Download diff</button>
+        <button onclick="downloadDiff()" data-repo-required="true">Download diff</button>
       </div>
       <pre id="diff"></pre>
     </section>
@@ -115,7 +116,7 @@
         <input id="applySessionId" placeholder="Jules Session ID (optional)" style="min-width: 260px" />
       </div>
       <div class="row">
-        <button onclick="applyPatch()">Apply patch</button>
+        <button onclick="applyPatch()" data-repo-required="true">Apply patch</button>
       </div>
       <div id="applyStatus" class="status"></div>
       <pre id="applyOut"></pre>
@@ -125,15 +126,15 @@
       <h2>PR Wizard (Git)</h2>
       <div class="row">
         <input id="branch" placeholder="branch name (z.B. acs/session-xyz)" style="min-width: 260px" />
-        <button onclick="createBranch()">Create branch</button>
-        <button onclick="gitStatus()">Status</button>
-        <button onclick="gitDiff()">Diff</button>
+        <button onclick="createBranch()" data-repo-required="true">Create branch</button>
+        <button onclick="gitStatus()" data-repo-required="true">Status</button>
+        <button onclick="gitDiff()" data-repo-required="true">Diff</button>
       </div>
       <div class="row">
         <input id="msg" placeholder="commit message" style="min-width: 360px" />
-        <button onclick="gitCommit()">Commit</button>
-        <button onclick="gitPush()">Push</button>
-        <button onclick="gitPreparePr()">Prepare PR</button>
+        <button onclick="gitCommit()" data-repo-required="true">Commit</button>
+        <button onclick="gitPush()" data-repo-required="true">Push</button>
+        <button onclick="gitPreparePr()" data-repo-required="true">Prepare PR</button>
       </div>
       <div class="row">
         <input id="prTitle" placeholder="PR title (optional)" style="min-width: 360px" />
@@ -151,7 +152,7 @@
         <textarea id="prBody" placeholder="PR body (optional)" style="min-height: 120px"></textarea>
       </div>
       <div class="row">
-        <button onclick="publish()">Publish (Push + PR)</button>
+        <button onclick="publish()" data-repo-required="true">Publish (Push + PR)</button>
         <button onclick="downloadPublishLog()" id="publishDownload" disabled>Download publish log</button>
       </div>
       <div id="publishStatus" class="status"></div>
@@ -168,43 +169,124 @@
           body: body ? JSON.stringify(body) : undefined,
         });
         const txt = await res.text();
-        if (!res.ok) throw new Error(txt);
+        if (!res.ok) {
+          const message = formatErrorMessage(txt);
+          throw new Error(message);
+        }
         return txt;
       }
       function repo() {
-        return document.getElementById("repo").value;
+        return document.getElementById("repo").value.trim();
       }
+      function ensureRepo(onError) {
+        const value = repo();
+        if (!value) {
+          const message = "Bitte zuerst ein Repo auswählen.";
+          if (onError) onError(message);
+          updateRepoDependentState();
+          return null;
+        }
+        return value;
+      }
+      function formatFastApiDetail(detail) {
+        if (Array.isArray(detail)) {
+          const parts = detail
+            .map((item) => {
+              if (!item) return "";
+              const loc = Array.isArray(item.loc) ? item.loc.join(".") : item.loc;
+              if (item.msg) {
+                if (loc && item.msg === "Field required" && loc.startsWith("query.")) {
+                  return `Missing query param: ${loc.split(".").slice(1).join(".")}`;
+                }
+                if (loc) return `${loc}: ${item.msg}`;
+                return item.msg;
+              }
+              return String(item);
+            })
+            .filter(Boolean);
+          return parts.join("; ");
+        }
+        if (typeof detail === "string") return detail;
+        return "";
+      }
+      function formatErrorMessage(text) {
+        if (!text) return "Request failed";
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed?.detail) {
+            const detailMessage = formatFastApiDetail(parsed.detail);
+            if (detailMessage) return detailMessage;
+          }
+          if (parsed?.message) return parsed.message;
+        } catch (err) {
+          // ignore JSON parse errors
+        }
+        return text.split("\n")[0] || "Request failed";
+      }
+      function updateRepoDependentState() {
+        const disabled = !repo();
+        document.querySelectorAll("[data-repo-required=\"true\"]").forEach((el) => {
+          el.disabled = disabled;
+        });
+      }
+      document.addEventListener("DOMContentLoaded", () => {
+        updateRepoDependentState();
+        document.getElementById("repo").addEventListener("change", updateRepoDependentState);
+      });
 
       async function listSessions() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("sessions").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("sessions").textContent = await api(
-          `/api/sessions?repo=${encodeURIComponent(repo())}`,
+          `/api/sessions?repo=${encodeURIComponent(repoValue)}`,
         );
       }
       async function newSession() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("sessions").textContent = message;
+        });
+        if (!repoValue) return;
         const title = document.getElementById("title").value || "untitled";
         document.getElementById("sessions").textContent = await api(
           "/api/sessions/new",
-          { repo: repo(), title },
+          { repo: repoValue, title },
         );
       }
       async function showDiff() {
         const id = document.getElementById("sessionId").value.trim();
         if (!id) return;
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("diff").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("diff").textContent = await api(
-          `/api/sessions/${encodeURIComponent(id)}/diff?repo=${encodeURIComponent(repo())}`,
+          `/api/sessions/${encodeURIComponent(id)}/diff?repo=${encodeURIComponent(repoValue)}`,
         );
       }
       function downloadDiff() {
         const id = document.getElementById("sessionId").value.trim();
         if (!id) return;
-        const url = `/api/sessions/${encodeURIComponent(id)}/diff/download?repo=${encodeURIComponent(repo())}`;
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("diff").textContent = message;
+        });
+        if (!repoValue) return;
+        const url = `/api/sessions/${encodeURIComponent(id)}/diff/download?repo=${encodeURIComponent(
+          repoValue,
+        )}`;
         window.location.href = url;
       }
       async function applyPatch() {
         const patch = document.getElementById("patch").value;
         const threeWay = document.getElementById("threeWay").checked;
         const sessionId = document.getElementById("applySessionId").value.trim();
-        const body = { repo: repo(), patch, three_way: threeWay };
+        const repoValue = ensureRepo((message) => {
+          setApplyStatus(`❌ ${message}`, "error");
+          document.getElementById("applyOut").textContent = "";
+        });
+        if (!repoValue) return;
+        const body = { repo: repoValue, patch, three_way: threeWay };
         if (sessionId) body.session_id = sessionId;
         try {
           const res = await fetch("/api/patch/apply.json", {
@@ -245,37 +327,61 @@
       }
       async function createBranch() {
         const name = document.getElementById("branch").value.trim();
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("gitOut").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
           "/api/git/branch",
-          { repo: repo(), name },
+          { repo: repoValue, name },
         );
       }
       async function gitStatus() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("gitOut").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
-          `/api/git/status?repo=${encodeURIComponent(repo())}`,
+          `/api/git/status?repo=${encodeURIComponent(repoValue)}`,
         );
       }
       async function gitDiff() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("gitOut").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
-          `/api/git/diff?repo=${encodeURIComponent(repo())}`,
+          `/api/git/diff?repo=${encodeURIComponent(repoValue)}`,
         );
       }
       async function gitCommit() {
         const message = document.getElementById("msg").value.trim();
+        const repoValue = ensureRepo((notice) => {
+          document.getElementById("gitOut").textContent = notice;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
           "/api/git/commit",
-          { repo: repo(), message },
+          { repo: repoValue, message },
         );
       }
       async function gitPush() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("gitOut").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
           "/api/git/push",
-          { repo: repo() },
+          { repo: repoValue },
         );
       }
       async function gitPreparePr() {
+        const repoValue = ensureRepo((message) => {
+          document.getElementById("gitOut").textContent = message;
+        });
+        if (!repoValue) return;
         document.getElementById("gitOut").textContent = await api(
-          `/api/git/pr-prepare?repo=${encodeURIComponent(repo())}`,
+          `/api/git/pr-prepare?repo=${encodeURIComponent(repoValue)}`,
         );
       }
       function copyToClipboard(id) {
@@ -305,7 +411,11 @@
       let publishData = null;
 
       async function publish() {
-        const payload = { repo: repo() };
+        const repoValue = ensureRepo((message) => {
+          setPublishStatus(`❌ ${message}`, "error");
+        });
+        if (!repoValue) return;
+        const payload = {};
         const branchName = document.getElementById("branch").value.trim();
         const commitMessage = document.getElementById("msg").value.trim();
         const prTitle = document.getElementById("prTitle").value.trim();
@@ -325,25 +435,24 @@
         document.getElementById("publishOut").textContent = "";
         document.getElementById("publishDownload").disabled = true;
         try {
-          const res = await fetch("/api/git/publish", {
+          const res = await fetch(`/api/git/publish?repo=${encodeURIComponent(repoValue)}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
+          const errorText = await res.text();
           let data = null;
-          let errorText = "";
-          const contentType = res.headers.get("Content-Type") || "";
-          if (contentType.includes("application/json")) {
+          if (errorText) {
             try {
-              data = await res.json();
+              data = JSON.parse(errorText);
             } catch (err) {
-              errorText = await res.text();
+              // ignore JSON parse errors
             }
-          } else {
-            errorText = await res.text();
           }
           if (!res.ok) {
-            const message = data?.detail || errorText || "Publish failed";
+            document.getElementById("publishOut").textContent =
+              errorText || "No response body returned.";
+            const message = data ? formatErrorMessage(errorText) : errorText || "Publish failed";
             throw new Error(message);
           }
           if (!data) {
@@ -354,7 +463,11 @@
           setPublishStatus(`Job queued (${data.job_id})`, "warn");
           startPublishPolling();
         } catch (error) {
-          setPublishStatus(`❌ Publish fehlgeschlagen: ${error.message}`, "error");
+          const message =
+            error instanceof TypeError
+              ? `Network error: ${error.message || "fetch failed"} (Tunnel/Verbindung prüfen)`
+              : error.message;
+          setPublishStatus(`❌ Publish fehlgeschlagen: ${message}`, "error");
         }
       }
 
@@ -366,20 +479,17 @@
           if (!publishJobId) return;
           try {
             const res = await fetch(`/api/jobs/${publishJobId}`);
+            const errorText = await res.text();
             let data = null;
-            let errorText = "";
-            const contentType = res.headers.get("Content-Type") || "";
-            if (contentType.includes("application/json")) {
+            if (errorText) {
               try {
-                data = await res.json();
+                data = JSON.parse(errorText);
               } catch (err) {
-                errorText = await res.text();
+                // ignore JSON parse errors
               }
-            } else {
-              errorText = await res.text();
             }
             if (!res.ok) {
-              const message = data?.detail || errorText || "Job failed";
+              const message = data ? formatErrorMessage(errorText) : errorText || "Job failed";
               throw new Error(message);
             }
             if (!data) {
@@ -392,7 +502,11 @@
               publishPoll = null;
             }
           } catch (error) {
-            setPublishStatus(`⚠️ Publish polling failed: ${error.message}`, "warn");
+            const message =
+              error instanceof TypeError
+                ? `Network error: ${error.message || "fetch failed"} (Tunnel/Verbindung prüfen)`
+                : error.message;
+            setPublishStatus(`⚠️ Publish polling failed: ${message}`, "warn");
           }
         }, 2000);
       }

@@ -80,6 +80,7 @@ Nutzung:
 - Der Job-Status ist via `GET /api/jobs/{job_id}` abrufbar; die Ergebnisse enthalten strukturierte `ActionResult`-Einträge inklusive `stdout/stderr`, `error_kind` und `pr_url`.
 - Actions werden optional als JSONL nach `~/.local/state/agent-control-surface/logs/YYYY-MM-DD.jsonl` geloggt (aktivieren via `ACS_ACTION_LOG=1`, Secrets werden redacted).
 - Hinweis: Ein PR entsteht erst nach einem erfolgreichen Push; der Publish-Flow bündelt Push + PR in einem Schritt.
+- Alle Aktionen setzen ein explizit ausgewähltes Repo aus der UI voraus (Keys aus der Allowlist in `panel/repos.py`); solange kein Repo gesetzt ist, sind die Buttons deaktiviert.
 
 Siehe `docs/publish.md` für curl-Beispiele.
 
