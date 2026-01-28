@@ -242,7 +242,8 @@ def api_git_pr_prepare(repo: str = Query(...)) -> str:
 
 
 @app.post("/api/git/publish", response_class=JSONResponse)
-def api_git_publish(repo: str = Query(...), req: PublishOptions = Body(default=PublishOptions())) -> JSONResponse:
+def api_git_publish(repo: str = Query(...), req: PublishOptions = Body(...)) -> JSONResponse:
+    # Body is required to keep OpenAPI accurate; clients can still send {} for defaults.
     correlation_id = new_correlation_id()
     job_id = str(uuid.uuid4())
     job_state = JobState(job_id=job_id, status="queued")

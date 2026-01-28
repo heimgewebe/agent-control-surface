@@ -4,13 +4,14 @@ Dieses Dokument zeigt ein paar **Smoke-Curls** für die neue Publish-API.
 
 Logging ist standardmäßig deaktiviert. Aktivieren via `ACS_ACTION_LOG=1` (oder ein eigener Pfad mit `ACS_ACTION_LOG=/path/log.jsonl`).
 
+Hinweis: `repo` wird ausschließlich als Query-Parameter übergeben (z.B. `?repo=metarepo`).
+
 ## Beispiel: Erfolg
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8099/api/git/publish \
+curl -sS -X POST "http://127.0.0.1:8099/api/git/publish?repo=metarepo" \
   -H 'Content-Type: application/json' \
   -d '{
-    "repo": "metarepo",
     "branch": "acs/metarepo-20250101-1200-abcd12",
     "commit_message": "acs: publish metarepo",
     "pr_title": "Update metarepo",
@@ -88,9 +89,9 @@ Erfolgsantwort (gekürzt):
 ## Beispiel: Fehler (branch_guard)
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8099/api/git/publish \
+curl -sS -X POST "http://127.0.0.1:8099/api/git/publish?repo=metarepo" \
   -H 'Content-Type: application/json' \
-  -d '{"repo":"metarepo"}'
+  -d '{}'
 ```
 
 ```json
