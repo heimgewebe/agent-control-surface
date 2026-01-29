@@ -27,7 +27,7 @@ def test_publish_invalid_branch_error_kind():
         # We need to capture the result recorded.
         # execute_publish calls record_job_result.
         with patch("panel.app.record_job_result") as mock_record:
-             execute_publish("job-1", "corr-1", req)
+             execute_publish("job-1", "corr-1", "metarepo", req)
 
              # Verify record_job_result was called with error
              args, _ = mock_record.call_args
