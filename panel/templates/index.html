@@ -188,6 +188,43 @@
         }
         return value;
       }
+      function truncateText(text, max = 2000) {
+        const value = String(text ?? "");
+        if (value.length <= max) return value;
+        return `${value.slice(0, max)}\n… (truncated)`;
+      }
+      function safeStringify(value) {
+        const seen = new WeakSet();
+        try {
+          return truncateText(
+            JSON.stringify(value, (_key, val) => {
+              if (val && typeof val === "object") {
+                if (seen.has(val)) return "[Circular]";
+                seen.add(val);
+              }
+              return val;
+            }),
+          );
+        } catch (err) {
+          try {
+            const ctor =
+              value && typeof value === "object" && value.constructor
+                ? value.constructor.name
+                : undefined;
+            const keys = value && typeof value === "object" ? Object.keys(value) : [];
+            return truncateText(
+              JSON.stringify({
+                unstringifiable: true,
+                type: typeof value,
+                constructor: ctor,
+                keys,
+              }),
+            );
+          } catch (fallbackErr) {
+            return "Unstringifiable error object";
+          }
+        }
+      }
       function formatFastApiDetail(detail) {
         if (Array.isArray(detail)) {
           const parts = detail
@@ -207,21 +244,37 @@
           return parts.join("; ");
         }
         if (typeof detail === "string") return detail;
+        if (detail && typeof detail === "object") {
+          if (detail.detail) {
+            const nested = formatFastApiDetail(detail.detail);
+            if (nested) return nested;
+          }
+          if (detail.msg) return String(detail.msg);
+          if (detail.error) return String(detail.error);
+          if (detail.message) return String(detail.message);
+          return safeStringify(detail);
+        }
         return "";
       }
       function formatErrorMessage(text) {
-        if (!text) return "Request failed";
+        const rawText = text == null ? "" : String(text);
+        if (!rawText) return "Request failed";
         try {
-          const parsed = JSON.parse(text);
-          if (parsed?.detail) {
+          const parsed = JSON.parse(rawText);
+          if (parsed?.detail !== undefined) {
             const detailMessage = formatFastApiDetail(parsed.detail);
-            if (detailMessage) return detailMessage;
+            if (detailMessage) return String(detailMessage);
           }
-          if (parsed?.message) return parsed.message;
+          if (parsed?.message) return String(parsed.message);
+          if (parsed?.error) return String(parsed.error);
+          if (parsed?.msg) return String(parsed.msg);
+          if (parsed && typeof parsed === "object") {
+            return safeStringify(parsed);
+          }
         } catch (err) {
           // ignore JSON parse errors
         }
-        return text.split("\n")[0] || "Request failed";
+        return rawText.split("\n")[0] || "Request failed";
       }
       function updateRepoDependentState() {
         const disabled = !repo();
@@ -453,7 +506,7 @@
             document.getElementById("publishOut").textContent =
               errorText || "No response body returned.";
             const message = data ? formatErrorMessage(errorText) : errorText || "Publish failed";
-            throw new Error(message);
+            throw new Error(String(message));
           }
           if (!data) {
             throw new Error("Publish failed: invalid response");
@@ -466,7 +519,7 @@
           const message =
             error instanceof TypeError
               ? `Network error: ${error.message || "fetch failed"} (Tunnel/Verbindung prüfen)`
-              : error.message;
+              : String(error?.message ?? error);
           setPublishStatus(`❌ Publish fehlgeschlagen: ${message}`, "error");
         }
       }
@@ -489,8 +542,10 @@
               }
             }
             if (!res.ok) {
+              document.getElementById("publishOut").textContent =
+                errorText || "No response body returned.";
               const message = data ? formatErrorMessage(errorText) : errorText || "Job failed";
-              throw new Error(message);
+              throw new Error(String(message));
             }
             if (!data) {
               throw new Error("Job failed: invalid response");
@@ -505,7 +560,7 @@
             const message =
               error instanceof TypeError
                 ? `Network error: ${error.message || "fetch failed"} (Tunnel/Verbindung prüfen)`
-                : error.message;
+                : String(error?.message ?? error);
             setPublishStatus(`⚠️ Publish polling failed: ${message}`, "warn");
           }
         }, 2000);
