@@ -1198,13 +1198,6 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     record_job_result(job_id, push_result)
     if not push_ok:
         return False
-    pr_title = (req.pr_title or "").strip() or build_default_pr_title(req, target.key)
-    pr_body = (req.pr_body or "").strip() or build_default_pr_body(
-        target.path,
-        correlation_id,
-        req.include_diffstat,
-    )
-    base_branch = (req.base or "main").strip()
     head_branch, _ = get_git_state(target.path)
     if not head_branch:
         result = build_action_result(
@@ -1219,8 +1212,37 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         )
         record_job_result(job_id, result)
         return False
+    base_branch = (req.base or "main").strip()
+    fetch = run(
+        ["git", "fetch", "origin", base_branch, head_branch, "--prune"],
+        cwd=target.path,
+        timeout=60,
+    )
+    fetch_result = build_action_result(
+        ok=fetch.code == 0,
+        action="git.fetch",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=fetch.stdout,
+        stderr=fetch.stderr,
+        code=fetch.code,
+        error_kind=None if fetch.code == 0 else "git_failed",
+        message="Fetched remote refs." if fetch.code == 0 else combine_output(fetch).strip(),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, fetch_result)
+    if fetch.code != 0:
+        return False
+    pr_title = (req.pr_title or "").strip() or build_default_pr_title(req, target.key)
+    pr_body = (req.pr_body or "").strip() or build_default_pr_body(
+        target.path,
+        correlation_id,
+        req.include_diffstat,
+    )
+    base_ref = f"origin/{base_branch}"
+    head_ref = f"origin/{head_branch}"
     commit_count = run(
-        ["git", "rev-list", "--count", f"{base_branch}..{head_branch}"],
+        ["git", "rev-list", "--count", f"{base_ref}..{head_ref}"],
         cwd=target.path,
         timeout=30,
     )
@@ -1249,7 +1271,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         message=(
             f"Found {commit_total} commit(s) between {base_branch} and {head_branch}."
             if commit_count_ok and commit_total > 0
-            else f"No commits between {base_branch} and {head_branch}; PR cannot be created."
+            else f"No commits between {base_ref} and {head_ref}; PR cannot be created."
             if commit_count_ok
             else combine_output(commit_count).strip()
         ),
@@ -1283,6 +1305,10 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             pr_ok = True
             existing_pr = True
             pr_url = existing_url
+    pr_error = combine_output(pr).strip()
+    pr_error_kind = None
+    if not pr_ok:
+        pr_error_kind = "no_commits" if "No commits between" in pr_error else "gh_failed"
     pr_result = build_action_result(
         ok=pr_ok,
         action="gh.pr.ensure" if existing_pr else "gh.pr.create",
@@ -1291,8 +1317,8 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         stdout=pr.stdout,
         stderr=pr.stderr,
         code=pr.code,
-        error_kind=None if pr_ok else "gh_failed",
-        message="PR already exists." if existing_pr else "PR created." if pr_ok else combine_output(pr).strip(),
+        error_kind=pr_error_kind,
+        message="PR already exists." if existing_pr else "PR created." if pr_ok else pr_error,
         pr_url=pr_url,
         repo_path=target.path,
     )

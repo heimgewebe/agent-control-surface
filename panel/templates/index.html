@@ -573,9 +573,23 @@
           done: { text: "Publish abgeschlossen", state: "success" },
           error: { text: "Publish fehlgeschlagen", state: "error" },
         };
-        const status = statusMap[data.status] || { text: data.status, state: "warn" };
-        setPublishStatus(status.text, status.state);
         const results = data.results || [];
+        let status = statusMap[data.status] || { text: data.status, state: "warn" };
+        if (data.status === "error" && results.length) {
+          for (let idx = results.length - 1; idx >= 0; idx -= 1) {
+            const result = results[idx];
+            if (!result.ok) {
+              const detail =
+                result.message || result.error_kind || "Publish failed";
+              status = {
+                text: `❌ ${result.action}: ${detail}`,
+                state: "error",
+              };
+              break;
+            }
+          }
+        }
+        setPublishStatus(status.text, status.state);
         const branch = results.find((res) => res.branch)?.branch;
         if (branch) {
           document.getElementById("branch").value = branch;
