@@ -18,7 +18,7 @@ def test_apply_patch_empty_error_kind():
 
 def test_publish_invalid_branch_error_kind():
     # Test execute_publish directly
-    # It requires job_id, correlation_id, req
+    # It requires job_id, correlation_id, repo, req
     with patch("panel.app.get_repo") as mock_get_repo:
         mock_get_repo.return_value = MagicMock(key="metarepo", path="/tmp/mock")
 
