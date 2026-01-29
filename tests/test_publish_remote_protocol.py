@@ -14,8 +14,44 @@ def test_get_remote_protocol_detection() -> None:
 
 def test_https_remote_to_ssh_github_only() -> None:
     assert https_remote_to_ssh("https://github.com/org/repo.git") == "git@github.com:org/repo.git"
-    assert https_remote_to_ssh("https://github.com/org/repo") == "git@github.com:org/repo"
+    assert https_remote_to_ssh("https://github.com/org/repo") == "git@github.com:org/repo.git"
+    assert https_remote_to_ssh("https://github.com/org/repo/") == "git@github.com:org/repo.git"
     assert https_remote_to_ssh("https://gitlab.com/org/repo.git") is None
+
+
+def test_execute_publish_no_commits_aborts_before_pr_create() -> None:
+    def run_side_effect(cmd, cwd, timeout=60, env=None, input_text=None):
+        if cmd[:3] == ["git", "ls-remote", "--heads"]:
+            return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+        if cmd[:2] == ["gh", "--version"]:
+            return CmdResult(code=0, stdout="gh version 2.0.0", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["gh", "auth", "status"]:
+            return CmdResult(code=0, stdout="logged in", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            return CmdResult(code=0, stdout="git@github.com:org/repo.git\n", stderr="", cmd=list(cmd))
+        if cmd[:2] == ["git", "push"]:
+            return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return CmdResult(code=0, stdout="0\n", stderr="", cmd=list(cmd))
+        return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+
+    with patch("panel.app.get_repo") as mock_get_repo, \
+         patch("panel.app.is_valid_branch_name", return_value=True), \
+         patch("panel.app.get_git_state", return_value=("feature", "abc123")), \
+         patch("panel.app.git_status_porcelain", return_value=[]), \
+         patch("panel.app.run", side_effect=run_side_effect) as mock_run, \
+         patch("panel.app.record_job_result") as mock_record:
+        mock_get_repo.return_value = MagicMock(key="metarepo", path="/tmp/mock")
+
+        req = PublishOptions(branch="feature")
+        execute_publish("job-1", "corr-1", "metarepo", req)
+
+        results = [call.args[1] for call in mock_record.call_args_list]
+        assert any(result.action == "git.pr.precheck" and not result.ok for result in results)
+        assert not any(
+            call.args[0][:3] == ["gh", "pr", "create"]
+            for call in mock_run.call_args_list
+        )
 
 
 def test_execute_publish_rewrites_https_remote() -> None:
@@ -30,6 +66,8 @@ def test_execute_publish_rewrites_https_remote() -> None:
             return CmdResult(code=0, stdout="https://github.com/org/repo.git\n", stderr="", cmd=list(cmd))
         if cmd[:3] == ["git", "remote", "set-url"]:
             return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return CmdResult(code=0, stdout="1\n", stderr="", cmd=list(cmd))
         if cmd[:2] == ["git", "push"]:
             return CmdResult(code=1, stdout="", stderr="push failed", cmd=list(cmd))
         return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))

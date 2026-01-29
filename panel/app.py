@@ -309,9 +309,11 @@ def https_remote_to_ssh(remote_url: str) -> str | None:
     parsed = urlparse(remote_url)
     if parsed.hostname != "github.com":
         return None
-    repo_path = parsed.path.lstrip("/")
+    repo_path = parsed.path.lstrip("/").rstrip("/")
     if not repo_path:
         return None
+    if not repo_path.endswith(".git"):
+        repo_path = f"{repo_path}.git"
     return f"git@github.com:{repo_path}"
 
 
@@ -1216,6 +1218,45 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             repo_path=target.path,
         )
         record_job_result(job_id, result)
+        return False
+    commit_count = run(
+        ["git", "rev-list", "--count", f"{base_branch}..{head_branch}"],
+        cwd=target.path,
+        timeout=30,
+    )
+    commit_count_ok = commit_count.code == 0
+    commit_total = 0
+    if commit_count_ok:
+        try:
+            commit_total = int(commit_count.stdout.strip() or 0)
+        except ValueError:
+            commit_count_ok = False
+    precheck_result = build_action_result(
+        ok=commit_count_ok and commit_total > 0,
+        action="git.pr.precheck",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=commit_count.stdout,
+        stderr=commit_count.stderr,
+        code=commit_count.code,
+        error_kind=(
+            None
+            if commit_count_ok and commit_total > 0
+            else "git_failed"
+            if not commit_count_ok
+            else "no_commits"
+        ),
+        message=(
+            f"Found {commit_total} commit(s) between {base_branch} and {head_branch}."
+            if commit_count_ok and commit_total > 0
+            else f"No commits between {base_branch} and {head_branch}; PR cannot be created."
+            if commit_count_ok
+            else combine_output(commit_count).strip()
+        ),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, precheck_result)
+    if not precheck_result.ok:
         return False
     pr_cmd = [
         "gh",
