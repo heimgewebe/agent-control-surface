@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +99,8 @@ class PublishOptions(BaseModel):
     base: str = "main"
     draft: bool = True
     include_diffstat: bool = True
+
+
 
 
 class PublishJobResponse(BaseModel):
@@ -280,6 +284,35 @@ def combine_output(result: Any) -> str:
     if result.stderr:
         output = f"{output}\n{result.stderr}" if output else result.stderr
     return output
+
+
+def get_remote_protocol(remote_url: str) -> str:
+    remote_url = remote_url.strip()
+    if not remote_url:
+        return "unknown"
+    if remote_url.startswith(("http://", "https://")):
+        return "https"
+    if remote_url.startswith("ssh://"):
+        return "ssh"
+    if re.match(r"^[^@]+@[^:]+:.+", remote_url):
+        return "ssh"
+    return "unknown"
+
+
+def https_remote_to_ssh(remote_url: str) -> str | None:
+    if not remote_url.startswith(("http://", "https://")):
+        return None
+    parsed = urlparse(remote_url)
+    if parsed.hostname != "github.com":
+        return None
+    repo_path = parsed.path.lstrip("/")
+    if not repo_path:
+        return None
+    return f"git@github.com:{repo_path}"
+
+
+def allow_remote_rewrite() -> bool:
+    return os.getenv("ACS_PUBLISH_REWRITE_REMOTE", "1") not in {"0", "false", "False"}
 
 
 def extract_patch_files(patch: str) -> set[str]:
@@ -930,6 +963,26 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     record_job_result(job_id, remote_result)
     if remote_check.code != 0:
         return False
+    gh_version = run(["gh", "--version"], cwd=target.path, timeout=30)
+    gh_version_result = build_action_result(
+        ok=gh_version.code == 0,
+        action="gh.version",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=gh_version.stdout,
+        stderr=gh_version.stderr,
+        code=gh_version.code,
+        error_kind=None if gh_version.code == 0 else "gh_missing",
+        message=(
+            "gh available."
+            if gh_version.code == 0
+            else "gh is missing. Install via apt (recommended) and ensure systemd user services have PATH."
+        ),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, gh_version_result)
+    if gh_version.code != 0:
+        return False
     auth_check = run(["gh", "auth", "status", "--hostname", "github.com"], cwd=target.path, timeout=30)
     auth_result = build_action_result(
         ok=auth_check.code == 0,
@@ -945,6 +998,94 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     )
     record_job_result(job_id, auth_result)
     if auth_check.code != 0:
+        return False
+    remote_url = run(["git", "remote", "get-url", "origin"], cwd=target.path, timeout=30)
+    remote_url_value = remote_url.stdout.strip()
+    remote_url_result = build_action_result(
+        ok=remote_url.code == 0 and bool(remote_url_value),
+        action="git.remote.url",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=remote_url.stdout,
+        stderr=remote_url.stderr,
+        code=remote_url.code,
+        error_kind=None if remote_url.code == 0 and remote_url_value else "git_failed",
+        message="Remote origin URL resolved." if remote_url.code == 0 and remote_url_value else combine_output(remote_url).strip(),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, remote_url_result)
+    if remote_url.code != 0 or not remote_url_value:
+        return False
+    remote_protocol = get_remote_protocol(remote_url_value)
+    if remote_protocol == "https":
+        if not allow_remote_rewrite():
+            result = build_action_result(
+                ok=False,
+                action="git.remote.protocol",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message=(
+                    "Remote uses HTTPS. SSH is required for non-interactive publish. "
+                    "Run: git remote set-url origin git@github.com:<org>/<repo>.git"
+                ),
+                error_kind="push_failed",
+                code=1,
+                repo_path=target.path,
+            )
+            record_job_result(job_id, result)
+            return False
+        ssh_url = https_remote_to_ssh(remote_url_value)
+        if not ssh_url:
+            result = build_action_result(
+                ok=False,
+                action="git.remote.protocol",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message=(
+                    "Remote uses HTTPS. SSH is required for non-interactive publish. "
+                    "Run: git remote set-url origin git@github.com:<org>/<repo>.git"
+                ),
+                error_kind="push_failed",
+                code=1,
+                repo_path=target.path,
+            )
+            record_job_result(job_id, result)
+            return False
+        rewrite = run(["git", "remote", "set-url", "origin", ssh_url], cwd=target.path, timeout=30)
+        rewrite_result = build_action_result(
+            ok=rewrite.code == 0,
+            action="git.remote.rewrite",
+            repo=target.key,
+            correlation_id=correlation_id,
+            stdout=rewrite.stdout,
+            stderr=rewrite.stderr,
+            code=rewrite.code,
+            error_kind=None if rewrite.code == 0 else "git_failed",
+            message=(
+                f"origin: {remote_url_value} -> {ssh_url}"
+                if rewrite.code == 0
+                else combine_output(rewrite).strip()
+            ),
+            repo_path=target.path,
+        )
+        record_job_result(job_id, rewrite_result)
+        if rewrite.code != 0:
+            return False
+    elif remote_protocol != "ssh":
+        result = build_action_result(
+            ok=False,
+            action="git.remote.protocol",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=(
+                "Remote uses an unsupported protocol. SSH is required for non-interactive publish. "
+                "Run: git remote set-url origin git@github.com:<org>/<repo>.git"
+            ),
+            error_kind="push_failed",
+            code=1,
+            repo_path=target.path,
+        )
+        record_job_result(job_id, result)
         return False
     status_lines = git_status_porcelain(target.path)
     if status_lines:
