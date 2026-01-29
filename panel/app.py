@@ -101,6 +101,10 @@ class PublishOptions(BaseModel):
     include_diffstat: bool = True
 
 
+class PublishReq(PublishOptions):
+    """Backwards-compatible alias for legacy imports."""
+
+
 
 
 class PublishJobResponse(BaseModel):
@@ -312,7 +316,9 @@ def https_remote_to_ssh(remote_url: str) -> str | None:
 
 
 def allow_remote_rewrite() -> bool:
-    return os.getenv("ACS_PUBLISH_REWRITE_REMOTE", "1") not in {"0", "false", "False"}
+    value = os.getenv("ACS_PUBLISH_REWRITE_REMOTE", "1")
+    value = value.strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 def extract_patch_files(patch: str) -> set[str]:

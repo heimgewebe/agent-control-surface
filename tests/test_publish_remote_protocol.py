@@ -72,3 +72,36 @@ def test_execute_publish_missing_gh() -> None:
 
         calls = [call.args[1] for call in mock_record.call_args_list]
         assert any(result.action == "gh.version" and not result.ok for result in calls)
+
+
+def test_execute_publish_https_remote_rewrite_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("ACS_PUBLISH_REWRITE_REMOTE", "0")
+
+    def run_side_effect(cmd, cwd, timeout=60, env=None, input_text=None):
+        if cmd[:3] == ["git", "ls-remote", "--heads"]:
+            return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+        if cmd[:2] == ["gh", "--version"]:
+            return CmdResult(code=0, stdout="gh 2.0.0", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["gh", "auth", "status"]:
+            return CmdResult(code=0, stdout="logged in", stderr="", cmd=list(cmd))
+        if cmd[:3] == ["git", "remote", "get-url"]:
+            return CmdResult(code=0, stdout="https://github.com/org/repo.git\n", stderr="", cmd=list(cmd))
+        return CmdResult(code=0, stdout="", stderr="", cmd=list(cmd))
+
+    with patch("panel.app.get_repo") as mock_get_repo, \
+         patch("panel.app.is_valid_branch_name", return_value=True), \
+         patch("panel.app.get_git_state", return_value=("feature", "abc123")), \
+         patch("panel.app.git_status_porcelain", return_value=[]), \
+         patch("panel.app.run", side_effect=run_side_effect) as mock_run, \
+         patch("panel.app.record_job_result") as mock_record:
+        mock_get_repo.return_value = MagicMock(key="metarepo", path="/tmp/mock")
+
+        req = PublishOptions(branch="feature")
+        execute_publish("job-1", "corr-1", "metarepo", req)
+
+        results = [call.args[1] for call in mock_record.call_args_list]
+        assert any(result.action == "git.remote.protocol" and not result.ok for result in results)
+        assert not any(
+            call.args[0][:3] == ["git", "remote", "set-url"]
+            for call in mock_run.call_args_list
+        )
