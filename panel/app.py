@@ -1321,7 +1321,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             else "no_commits"
         ),
         message=(
-            f"Found {commit_total} commit(s) between {base_branch} and {head_ref_name}."
+            f"Found {commit_total} commit(s) between {base_ref} and {head_ref}."
             if commit_count_ok and commit_total > 0
             else f"No commits between {base_ref} and {head_ref}; PR cannot be created."
             if commit_count_ok
