@@ -1229,16 +1229,15 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         if upstream_branch
         else "Upstream not set; using local branch for remote lookup."
     )
-    upstream_ok = upstream.code == 0
     upstream_result = build_action_result(
-        ok=upstream_ok,
+        ok=True,
         action="git.branch.upstream",
         repo=target.key,
         correlation_id=correlation_id,
         stdout=upstream.stdout,
         stderr=upstream.stderr,
         code=upstream.code,
-        error_kind=None if upstream_ok else "no_upstream",
+        error_kind=None,
         message=upstream_message,
         repo_path=target.path,
     )

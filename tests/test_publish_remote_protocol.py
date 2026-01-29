@@ -155,8 +155,8 @@ def test_execute_publish_upstream_fallback_uses_head_branch() -> None:
         results = [call.args[1] for call in mock_record.call_args_list]
         assert any(
             result.action == "git.branch.upstream"
-            and not result.ok
-            and result.error_kind == "no_upstream"
+            and result.ok
+            and result.error_kind is None
             and "Upstream not set" in result.message
             for result in results
         )
