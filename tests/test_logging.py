@@ -1,4 +1,11 @@
-from panel.logging import redact_secrets
+import pytest
+from panel.logging import redact_secrets, _get_sensitive_env_values
+
+@pytest.fixture(autouse=True)
+def clear_env_cache():
+    _get_sensitive_env_values.cache_clear()
+    yield
+    _get_sensitive_env_values.cache_clear()
 
 def test_redact_secrets(monkeypatch):
     # Test env var redaction using monkeypatch

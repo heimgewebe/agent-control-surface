@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -70,12 +71,20 @@ def redact_record(value: Any) -> Any:
     return value
 
 
-def redact_secrets(text: str) -> str:
-    redacted = text
+@lru_cache(maxsize=1)
+def _get_sensitive_env_values() -> list[str]:
+    values = []
     for key in SENSITIVE_ENV_KEYS:
         env_value = os.getenv(key)
         if env_value:
-            redacted = redacted.replace(env_value, "[redacted]")
+            values.append(env_value)
+    return values
+
+
+def redact_secrets(text: str) -> str:
+    redacted = text
+    for env_value in _get_sensitive_env_values():
+        redacted = redacted.replace(env_value, "[redacted]")
     redacted = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[redacted]", redacted)
     redacted = re.sub(r"github_pat_[A-Za-z0-9_]{20,}", "[redacted]", redacted)
     # Redact token= and access_token= in any text (URL or not), but avoid matching my_token=
