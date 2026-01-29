@@ -18,6 +18,11 @@ SENSITIVE_ENV_KEYS = [
     "COHERE_API_KEY",
 ]
 
+GHP_PATTERN = re.compile(r"ghp_[A-Za-z0-9]{20,}")
+GITHUB_PAT_PATTERN = re.compile(r"github_pat_[A-Za-z0-9_]{20,}")
+# Redact token= and access_token= in any text (URL or not), but avoid matching my_token=
+TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(token|access_token)=[^&\s]+")
+
 
 @dataclass(frozen=True)
 class ActionLogConfig:
@@ -89,8 +94,7 @@ def redact_secrets(text: str) -> str:
     redacted = text
     for env_value in _get_sensitive_env_values():
         redacted = redacted.replace(env_value, "[redacted]")
-    redacted = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[redacted]", redacted)
-    redacted = re.sub(r"github_pat_[A-Za-z0-9_]{20,}", "[redacted]", redacted)
-    # Redact token= and access_token= in any text (URL or not), but avoid matching my_token=
-    redacted = re.sub(r"(?<![A-Za-z0-9_])(token|access_token)=[^&\s]+", r"\1=[redacted]", redacted)
+    redacted = GHP_PATTERN.sub("[redacted]", redacted)
+    redacted = GITHUB_PAT_PATTERN.sub("[redacted]", redacted)
+    redacted = TOKEN_PATTERN.sub(r"\1=[redacted]", redacted)
     return redacted
