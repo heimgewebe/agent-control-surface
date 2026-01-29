@@ -309,9 +309,11 @@ def https_remote_to_ssh(remote_url: str) -> str | None:
     parsed = urlparse(remote_url)
     if parsed.hostname != "github.com":
         return None
-    repo_path = parsed.path.lstrip("/")
+    repo_path = parsed.path.lstrip("/").rstrip("/")
     if not repo_path:
         return None
+    if not repo_path.endswith(".git"):
+        repo_path = f"{repo_path}.git"
     return f"git@github.com:{repo_path}"
 
 
@@ -1196,13 +1198,6 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     record_job_result(job_id, push_result)
     if not push_ok:
         return False
-    pr_title = (req.pr_title or "").strip() or build_default_pr_title(req, target.key)
-    pr_body = (req.pr_body or "").strip() or build_default_pr_body(
-        target.path,
-        correlation_id,
-        req.include_diffstat,
-    )
-    base_branch = (req.base or "main").strip()
     head_branch, _ = get_git_state(target.path)
     if not head_branch:
         result = build_action_result(
@@ -1217,6 +1212,125 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         )
         record_job_result(job_id, result)
         return False
+    base_branch = (req.base or "main").strip()
+    upstream_branch = None
+    upstream = run(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        cwd=target.path,
+        timeout=20,
+    )
+    upstream_value = upstream.stdout.strip()
+    if upstream.code == 0 and upstream_value:
+        remote_name, _, branch_name = upstream_value.partition("/")
+        if remote_name == "origin" and branch_name:
+            upstream_branch = branch_name
+    upstream_message = (
+        f"Using upstream {upstream_value}."
+        if upstream_branch
+        else "Upstream not set; using local branch for remote lookup."
+    )
+    upstream_result = build_action_result(
+        ok=True,
+        action="git.branch.upstream",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=upstream.stdout,
+        stderr=upstream.stderr,
+        code=upstream.code,
+        error_kind=None,
+        message=upstream_message,
+        repo_path=target.path,
+    )
+    record_job_result(job_id, upstream_result)
+    head_ref_name = upstream_branch or head_branch
+    pr_head_branch = head_ref_name
+    fetch = run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"{base_branch}:refs/remotes/origin/{base_branch}",
+            f"{head_ref_name}:refs/remotes/origin/{head_ref_name}",
+            "--prune",
+        ],
+        cwd=target.path,
+        timeout=60,
+    )
+    fetch_error = ""
+    fetch_error_kind = None
+    if fetch.code != 0:
+        stderr = fetch.stderr or ""
+        if f"couldn't find remote ref {base_branch}" in stderr:
+            fetch_error_kind = "base_missing"
+            fetch_error = f"Remote base branch '{base_branch}' not found."
+        elif f"couldn't find remote ref {head_ref_name}" in stderr:
+            fetch_error_kind = "head_missing"
+            fetch_error = f"Remote head branch '{head_ref_name}' not found."
+        else:
+            fetch_error_kind = "git_failed"
+            fetch_error = combine_output(fetch).strip()
+    fetch_result = build_action_result(
+        ok=fetch.code == 0,
+        action="git.fetch",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=fetch.stdout,
+        stderr=fetch.stderr,
+        code=fetch.code,
+        error_kind=None if fetch.code == 0 else fetch_error_kind,
+        message="Fetched remote refs." if fetch.code == 0 else fetch_error,
+        repo_path=target.path,
+    )
+    record_job_result(job_id, fetch_result)
+    if fetch.code != 0:
+        return False
+    pr_title = (req.pr_title or "").strip() or build_default_pr_title(req, target.key)
+    pr_body = (req.pr_body or "").strip() or build_default_pr_body(
+        target.path,
+        correlation_id,
+        req.include_diffstat,
+    )
+    base_ref = f"origin/{base_branch}"
+    head_ref = f"origin/{head_ref_name}"
+    commit_count = run(
+        ["git", "rev-list", "--count", f"{base_ref}..{head_ref}"],
+        cwd=target.path,
+        timeout=30,
+    )
+    commit_count_ok = commit_count.code == 0
+    commit_total = 0
+    if commit_count_ok:
+        try:
+            commit_total = int(commit_count.stdout.strip() or 0)
+        except ValueError:
+            commit_count_ok = False
+    precheck_result = build_action_result(
+        ok=commit_count_ok and commit_total > 0,
+        action="git.pr.precheck",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=commit_count.stdout,
+        stderr=commit_count.stderr,
+        code=commit_count.code,
+        error_kind=(
+            None
+            if commit_count_ok and commit_total > 0
+            else "git_failed"
+            if not commit_count_ok
+            else "no_commits"
+        ),
+        message=(
+            f"Found {commit_total} commit(s) between {base_ref} and {head_ref}."
+            if commit_count_ok and commit_total > 0
+            else f"No commits between {base_ref} and {head_ref}; PR cannot be created."
+            if commit_count_ok
+            else combine_output(commit_count).strip()
+        ),
+        repo_path=target.path,
+    )
+    record_job_result(job_id, precheck_result)
+    if not precheck_result.ok:
+        return False
     pr_cmd = [
         "gh",
         "pr",
@@ -1228,7 +1342,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         "--base",
         base_branch,
         "--head",
-        head_branch,
+        pr_head_branch,
     ]
     if req.draft:
         pr_cmd.append("--draft")
@@ -1237,11 +1351,15 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     pr_url = extract_pr_url(pr.stdout or pr.stderr)
     existing_pr = False
     if not pr_ok:
-        existing_url = find_existing_pr_url(target.path, head_branch, base_branch)
+        existing_url = find_existing_pr_url(target.path, pr_head_branch, base_branch)
         if existing_url:
             pr_ok = True
             existing_pr = True
             pr_url = existing_url
+    pr_error = combine_output(pr).strip()
+    pr_error_kind = None
+    if not pr_ok:
+        pr_error_kind = "no_commits" if "No commits between" in pr_error else "gh_failed"
     pr_result = build_action_result(
         ok=pr_ok,
         action="gh.pr.ensure" if existing_pr else "gh.pr.create",
@@ -1250,8 +1368,8 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         stdout=pr.stdout,
         stderr=pr.stderr,
         code=pr.code,
-        error_kind=None if pr_ok else "gh_failed",
-        message="PR already exists." if existing_pr else "PR created." if pr_ok else combine_output(pr).strip(),
+        error_kind=pr_error_kind,
+        message="PR already exists." if existing_pr else "PR created." if pr_ok else pr_error,
         pr_url=pr_url,
         repo_path=target.path,
     )
