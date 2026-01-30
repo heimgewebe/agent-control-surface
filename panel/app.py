@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import threading
 import time
 import uuid
@@ -34,7 +35,7 @@ JOB_MAX_AGE_SECONDS = 24 * 60 * 60
 JOB_MAX_ENTRIES = 200
 MAX_JOB_LOG_LINES = 1000
 MAX_LOG_LINE_CHARS = 4000
-MAX_STDOUT_CHARS = 50000
+MAX_OUTPUT_CHARS = 50000
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
 
 
@@ -103,6 +104,11 @@ class PublishOptions(BaseModel):
 
 class PublishReq(PublishOptions):
     """Backwards-compatible alias for legacy imports."""
+
+
+class GitRepairStageBReq(BaseModel):
+    base_branch: str | None = None
+    delete_base_ref: bool = False
 
 
 
@@ -264,6 +270,65 @@ def api_git_publish(repo: str = Query(...), req: PublishOptions = Body(...)) -> 
     return JSONResponse(payload.model_dump(), status_code=202)
 
 
+@app.post("/api/git/health/diagnose", response_class=JSONResponse)
+def api_git_health_diagnose(repo: str = Query(...)) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.diagnose", None)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/git/health/repair/stage-a", response_class=JSONResponse)
+def api_git_health_repair_stage_a(repo: str = Query(...)) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.repair.stage_a", None)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/git/health/repair/stage-b", response_class=JSONResponse)
+def api_git_health_repair_stage_b(
+    repo: str = Query(...),
+    req: GitRepairStageBReq = Body(GitRepairStageBReq()),
+) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.repair.stage_b", req)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/git/health/repair/stage-c", response_class=JSONResponse)
+def api_git_health_repair_stage_c(repo: str = Query(...)) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.repair.stage_c", None)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
 @app.get("/api/jobs/{job_id}", response_class=JSONResponse)
 def api_job_status(job_id: str) -> JSONResponse:
     with JOB_LOCK:
@@ -288,6 +353,85 @@ def combine_output(result: Any) -> str:
     if result.stderr:
         output = f"{output}\n{result.stderr}" if output else result.stderr
     return output
+
+
+def classify_git_ref_error(stderr: str) -> dict[str, str | None] | None:
+    if not stderr:
+        return None
+    match = re.search(r"cannot lock ref '([^']+)'", stderr)
+    if match:
+        return {
+            "error_kind": "ref_lock",
+            "hint": "Unable to lock local ref; remote tracking refs may be inconsistent.",
+            "affected_ref": match.group(1),
+        }
+    match = re.search(r"unable to resolve reference '([^']+)'", stderr)
+    if match:
+        return {
+            "error_kind": "resolve_ref_failed",
+            "hint": "Unable to resolve local ref; remote tracking refs may be inconsistent.",
+            "affected_ref": match.group(1),
+        }
+    match = re.search(r"([A-Za-z0-9._/-]+) has become dangling", stderr)
+    if match:
+        return {
+            "error_kind": "dangling_ref",
+            "hint": "Local ref has become dangling; remote tracking refs may be inconsistent.",
+            "affected_ref": match.group(1),
+        }
+    lowered = stderr.lower()
+    if "packed refs" in lowered and "corrupt" in lowered:
+        return {
+            "error_kind": "ref_repair_failed",
+            "hint": "Packed refs appear corrupt; repacking refs may be required.",
+            "affected_ref": None,
+        }
+    return None
+
+
+def format_command_line(cmd: list[str]) -> str:
+    return f"$ {shlex.join(cmd)}"
+
+
+def truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… (truncated)"
+
+
+def run_git_command_sequence(
+    path: Path,
+    commands: list[list[str]],
+    *,
+    timeout: int,
+    allow_failures: set[int] | None = None,
+) -> tuple[bool, str, str, int | None, list[str]]:
+    allow_failures = allow_failures or set()
+    combined_stdout: list[str] = []
+    combined_stderr: list[str] = []
+    optional_failures: list[str] = []
+    ok = True
+    last_code: int | None = None
+    for idx, cmd in enumerate(commands):
+        result = run(cmd, cwd=path, timeout=timeout)
+        last_code = result.code
+        cmd_line = format_command_line(list(cmd))
+        stdout_lines = [cmd_line]
+        stdout_value = truncate_text(result.stdout.strip(), 20000) if result.stdout else ""
+        if stdout_value:
+            stdout_lines.append(stdout_value)
+        combined_stdout.append("\n".join(stdout_lines))
+        stderr_value = truncate_text(result.stderr.strip(), 20000) if result.stderr else ""
+        if stderr_value:
+            combined_stderr.append("\n".join([cmd_line, stderr_value]))
+        if result.code != 0:
+            if idx in allow_failures:
+                optional_failures.append(cmd_line)
+            else:
+                ok = False
+    stdout_combined = truncate_text("\n\n".join(combined_stdout), MAX_OUTPUT_CHARS)
+    stderr_combined = truncate_text("\n\n".join(combined_stderr), MAX_OUTPUT_CHARS)
+    return ok, stdout_combined, stderr_combined, last_code, optional_failures
 
 
 def get_remote_protocol(remote_url: str) -> str:
@@ -355,10 +499,10 @@ def _redact_action_result(r: ActionResult) -> ActionResult:
 def record_job_result(job_id: str, result: ActionResult) -> None:
     # Cap stdout/stderr to avoid excessive memory usage
     updates = {}
-    if len(result.stdout) > MAX_STDOUT_CHARS:
-        updates["stdout"] = result.stdout[:MAX_STDOUT_CHARS] + "... (truncated)"
-    if len(result.stderr) > MAX_STDOUT_CHARS:
-        updates["stderr"] = result.stderr[:MAX_STDOUT_CHARS] + "... (truncated)"
+    if len(result.stdout) > MAX_OUTPUT_CHARS:
+        updates["stdout"] = result.stdout[:MAX_OUTPUT_CHARS] + "... (truncated)"
+    if len(result.stderr) > MAX_OUTPUT_CHARS:
+        updates["stderr"] = result.stderr[:MAX_OUTPUT_CHARS] + "... (truncated)"
 
     # Create truncated copy first (if needed), then redacted copy
     truncated_result = result.model_copy(update=updates) if updates else result
@@ -516,6 +660,153 @@ def build_action_result(
         duration_ms=duration_ms,
         correlation_id=correlation_id,
     )
+
+
+def git_remote_diagnose(target: Repo, correlation_id: str) -> ActionResult:
+    start = time.monotonic()
+    commands = [
+        ["git", "status", "--porcelain=v1", "-b"],
+        ["git", "remote", "-v"],
+        ["git", "show-ref", "--", "refs/remotes/origin"],
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    ]
+    ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
+        target.path,
+        commands,
+        timeout=30,
+    )
+    message = "Git diagnose completed." if ok else "Git diagnose completed with errors."
+    if optional_failures:
+        message = f"{message} Optional commands failed."
+    result = build_action_result(
+        ok=ok,
+        action="git.diagnose",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        error_kind=None if ok else "diagnose_failed",
+        message=message,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    return result
+
+
+def git_remote_repair_stage_a(target: Repo, correlation_id: str) -> ActionResult:
+    start = time.monotonic()
+    commands = [
+        ["git", "remote", "prune", "origin"],
+        ["git", "fetch", "--prune", "origin"],
+    ]
+    ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
+        target.path,
+        commands,
+        timeout=60,
+    )
+    message = "Repair stage A completed." if ok else "Repair stage A failed."
+    if optional_failures:
+        message = f"{message} Optional commands failed."
+    result = build_action_result(
+        ok=ok,
+        action="git.repair.stage_a",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        error_kind=None if ok else "ref_repair_failed",
+        message=message,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    return result
+
+
+def git_remote_repair_stage_b(
+    target: Repo,
+    correlation_id: str,
+    base_branch: str | None,
+    delete_base_ref: bool,
+) -> ActionResult:
+    start = time.monotonic()
+    base_branch = (base_branch or "").strip() or "main"
+    if delete_base_ref and not is_valid_branch_name(base_branch):
+        result = build_action_result(
+            ok=False,
+            action="git.repair.stage_b",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message="Invalid base branch for deletion.",
+            error_kind="invalid_input",
+            code=1,
+            repo_path=target.path,
+        )
+        result.duration_ms = int((time.monotonic() - start) * 1000)
+        return result
+    commands: list[list[str]] = []
+    allow_failures: set[int] = set()
+    commands.append(["git", "update-ref", "-d", "refs/remotes/origin/HEAD"])
+    allow_failures.add(0)
+    if delete_base_ref:
+        commands.append(["git", "update-ref", "-d", f"refs/remotes/origin/{base_branch}"])
+        allow_failures.add(len(commands) - 1)
+    commands.append(["git", "fetch", "--prune", "origin"])
+    ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
+        target.path,
+        commands,
+        timeout=60,
+        allow_failures=allow_failures,
+    )
+    message = "Repair stage B completed." if ok else "Repair stage B failed."
+    if optional_failures:
+        message = f"{message} Some refs were already missing."
+    result = build_action_result(
+        ok=ok,
+        action="git.repair.stage_b",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        error_kind=None if ok else "ref_repair_failed",
+        message=message,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    return result
+
+
+def git_remote_repair_stage_c(target: Repo, correlation_id: str) -> ActionResult:
+    start = time.monotonic()
+    commands = [
+        ["git", "pack-refs", "--all", "--prune"],
+        ["git", "fetch", "--prune", "origin"],
+    ]
+    ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
+        target.path,
+        commands,
+        timeout=60,
+    )
+    message = "Repair stage C completed." if ok else "Repair stage C failed."
+    if optional_failures:
+        message = f"{message} Optional commands failed."
+    result = build_action_result(
+        ok=ok,
+        action="git.repair.stage_c",
+        repo=target.key,
+        correlation_id=correlation_id,
+        stdout=stdout,
+        stderr=stderr,
+        code=code,
+        error_kind=None if ok else "ref_repair_failed",
+        message=message,
+        repo_path=target.path,
+    )
+    result.duration_ms = int((time.monotonic() - start) * 1000)
+    return result
 
 
 def get_apply_context(repo: str) -> dict[str, str]:
@@ -872,6 +1163,71 @@ def push_action(req: GitPushReq) -> tuple[ActionResult, int]:
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
     return result, 200 if ok else 500
+
+
+def run_git_health_job(
+    job_id: str,
+    correlation_id: str,
+    repo: str,
+    action: str,
+    req: GitRepairStageBReq | None,
+) -> None:
+    set_job_status(job_id, "running")
+    try:
+        target = get_repo(repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action=action,
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        record_job_result(job_id, result)
+        set_job_status(job_id, "error")
+        return
+    try:
+        if action == "git.diagnose":
+            result = git_remote_diagnose(target, correlation_id)
+        elif action == "git.repair.stage_a":
+            result = git_remote_repair_stage_a(target, correlation_id)
+        elif action == "git.repair.stage_b":
+            base_branch = req.base_branch if req else None
+            delete_base_ref = req.delete_base_ref if req else False
+            result = git_remote_repair_stage_b(
+                target,
+                correlation_id,
+                base_branch,
+                delete_base_ref,
+            )
+        elif action == "git.repair.stage_c":
+            result = git_remote_repair_stage_c(target, correlation_id)
+        else:
+            result = build_action_result(
+                ok=False,
+                action=action,
+                repo=repo,
+                correlation_id=correlation_id,
+                message=f"Unknown git health action: {action}",
+                error_kind="internal",
+                code=1,
+                repo_path=target.path,
+            )
+    except Exception as exc:
+        result = build_action_result(
+            ok=False,
+            action=action,
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="internal",
+            code=1,
+            repo_path=target.path,
+        )
+    record_job_result(job_id, result)
+    set_job_status(job_id, "done" if result.ok else "error")
 
 
 def run_publish_job(job_id: str, correlation_id: str, repo: str, req: PublishOptions) -> None:
@@ -1278,16 +1634,22 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     fetch_error = ""
     fetch_error_kind = None
     if fetch.code != 0:
-        stderr = fetch.stderr or ""
+        stderr = combine_output(fetch).strip()
+        ref_error = classify_git_ref_error(stderr)
         if f"couldn't find remote ref {base_branch}" in stderr:
             fetch_error_kind = "base_missing"
             fetch_error = f"Remote base branch '{base_branch}' not found."
         elif f"couldn't find remote ref {head_ref_name}" in stderr:
             fetch_error_kind = "head_missing"
             fetch_error = f"Remote head branch '{head_ref_name}' not found."
+        elif ref_error:
+            fetch_error_kind = ref_error["error_kind"]
+            hint = ref_error["hint"] or "Remote refs appear inconsistent."
+            affected = ref_error["affected_ref"]
+            fetch_error = f"{hint} (ref: {affected})" if affected else hint
         else:
             fetch_error_kind = "git_failed"
-            fetch_error = combine_output(fetch).strip()
+            fetch_error = stderr
     fetch_result = build_action_result(
         ok=fetch.code == 0,
         action="git.fetch",
