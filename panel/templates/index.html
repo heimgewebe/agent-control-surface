@@ -68,6 +68,13 @@
       .status.error {
         color: #c62828;
       }
+      .callout {
+        margin-top: 8px;
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: rgba(255, 193, 7, 0.15);
+        border: 1px solid rgba(255, 193, 7, 0.4);
+      }
     </style>
   </head>
   <body>
@@ -155,6 +162,25 @@
         <button onclick="publish()" data-repo-required="true">Publish (Push + PR)</button>
         <button onclick="downloadPublishLog()" id="publishDownload" disabled>Download publish log</button>
       </div>
+      <div class="row">
+        <button onclick="gitDiagnose()" data-repo-required="true">Diagnose Git (read-only)</button>
+        <button onclick="gitRepairStageA()" data-repo-required="true">Repair Git Refs (Stage A)</button>
+        <button onclick="gitRepairStageB()" data-repo-required="true">Repair Git Refs (Stage B)</button>
+        <button onclick="gitRepairStageC()" data-repo-required="true">
+          Repair Git Refs (Stage C – pack-refs, nur wenn A/B nicht helfen)
+        </button>
+      </div>
+      <div class="row small">
+        <label>
+          <input type="checkbox" id="repairDeleteBase" />
+          Stage B: also delete origin/&lt;base&gt; (nur bei klarer Diagnose)
+        </label>
+      </div>
+      <div class="small">
+        Nur lokale Tracking-Refs (refs/remotes/origin/*). Keine lokalen Branches und keine Remote-Branches
+        werden geändert.
+      </div>
+      <div id="gitRepairOffer" class="callout small" style="display: none"></div>
       <div id="publishStatus" class="status"></div>
       <div id="publishPrUrl" class="small"></div>
       <pre id="publishOut"></pre>
@@ -462,12 +488,14 @@
       let publishJobId = null;
       let publishPoll = null;
       let publishData = null;
+      let publishJobMode = "publish";
 
       async function publish() {
         const repoValue = ensureRepo((message) => {
           setPublishStatus(`❌ ${message}`, "error");
         });
         if (!repoValue) return;
+        publishJobMode = "publish";
         const payload = {};
         const branchName = document.getElementById("branch").value.trim();
         const commitMessage = document.getElementById("msg").value.trim();
@@ -484,6 +512,7 @@
         payload.draft = prDraft;
         payload.include_diffstat = includeDiffstat;
         setPublishStatus("Publish gestartet…", "warn");
+        clearGitRepairOffer();
         document.getElementById("publishPrUrl").textContent = "";
         document.getElementById("publishOut").textContent = "";
         document.getElementById("publishDownload").disabled = true;
@@ -522,6 +551,73 @@
               : String(error?.message ?? error);
           setPublishStatus(`❌ Publish fehlgeschlagen: ${message}`, "error");
         }
+      }
+
+      async function startGitHealthJob(path, body) {
+        const repoValue = ensureRepo((message) => {
+          setPublishStatus(`❌ ${message}`, "error");
+        });
+        if (!repoValue) return;
+        publishJobMode = "git-health";
+        setPublishStatus("Git-Health-Job gestartet…", "warn");
+        clearGitRepairOffer();
+        document.getElementById("publishPrUrl").textContent = "";
+        document.getElementById("publishOut").textContent = "";
+        document.getElementById("publishDownload").disabled = true;
+        const options = { method: "POST" };
+        if (body) {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify(body);
+        }
+        try {
+          const res = await fetch(`${path}?repo=${encodeURIComponent(repoValue)}`, options);
+          const errorText = await res.text();
+          let data = null;
+          if (errorText) {
+            try {
+              data = JSON.parse(errorText);
+            } catch (err) {
+              // ignore JSON parse errors
+            }
+          }
+          if (!res.ok) {
+            document.getElementById("publishOut").textContent =
+              errorText || "No response body returned.";
+            const message = data ? formatErrorMessage(errorText) : errorText || "Job failed";
+            throw new Error(String(message));
+          }
+          if (!data) {
+            throw new Error("Job failed: invalid response");
+          }
+          publishJobId = data.job_id;
+          publishData = null;
+          setPublishStatus(`Job queued (${data.job_id})`, "warn");
+          startPublishPolling();
+        } catch (error) {
+          const message =
+            error instanceof TypeError
+              ? `Network error: ${error.message || "fetch failed"} (Tunnel/Verbindung prüfen)`
+              : String(error?.message ?? error);
+          setPublishStatus(`❌ Git-Health-Job fehlgeschlagen: ${message}`, "error");
+        }
+      }
+
+      function gitDiagnose() {
+        startGitHealthJob("/api/git/health/diagnose");
+      }
+      function gitRepairStageA() {
+        startGitHealthJob("/api/git/health/repair/stage-a");
+      }
+      function gitRepairStageB() {
+        const deleteBaseRef = document.getElementById("repairDeleteBase").checked;
+        const base = document.getElementById("prBase").value.trim();
+        startGitHealthJob("/api/git/health/repair/stage-b", {
+          base_branch: base || "main",
+          delete_base_ref: deleteBaseRef,
+        });
+      }
+      function gitRepairStageC() {
+        startGitHealthJob("/api/git/health/repair/stage-c");
       }
 
       function startPublishPolling() {
@@ -567,12 +663,20 @@
       }
 
       function renderPublishJob(data) {
-        const statusMap = {
-          queued: { text: "Publish queued", state: "warn" },
-          running: { text: "Publish läuft…", state: "warn" },
-          done: { text: "Publish abgeschlossen", state: "success" },
-          error: { text: "Publish fehlgeschlagen", state: "error" },
-        };
+        const statusMap =
+          publishJobMode === "git-health"
+            ? {
+                queued: { text: "Git-Health queued", state: "warn" },
+                running: { text: "Git-Health läuft…", state: "warn" },
+                done: { text: "Git-Health abgeschlossen", state: "success" },
+                error: { text: "Git-Health fehlgeschlagen", state: "error" },
+              }
+            : {
+                queued: { text: "Publish queued", state: "warn" },
+                running: { text: "Publish läuft…", state: "warn" },
+                done: { text: "Publish abgeschlossen", state: "success" },
+                error: { text: "Publish fehlgeschlagen", state: "error" },
+              };
         const results = data.results || [];
         let status = statusMap[data.status] || { text: data.status, state: "warn" };
         if (data.status === "error" && results.length) {
@@ -601,13 +705,25 @@
           }
         }
         setPublishStatus(status.text, status.state);
+        if (publishJobMode === "publish") {
+          updateGitRepairOffer(results);
+        } else {
+          clearGitRepairOffer();
+        }
         const branch = results.find((res) => res.branch)?.branch;
         if (branch) {
           document.getElementById("branch").value = branch;
         }
         const prUrl = results.find((res) => res.pr_url)?.pr_url;
+        const prUrlContainer = document.getElementById("publishPrUrl");
+        prUrlContainer.replaceChildren();
         if (prUrl) {
-          document.getElementById("publishPrUrl").innerHTML = `<a href="${prUrl}" target="_blank">${prUrl}</a>`;
+          const link = document.createElement("a");
+          link.href = prUrl;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = prUrl;
+          prUrlContainer.append(link);
         }
         document.getElementById("publishOut").textContent = formatPublishResults(results, data.log_tail);
         document.getElementById("publishDownload").disabled = !results.length;
@@ -657,6 +773,62 @@
         const status = document.getElementById("publishStatus");
         status.textContent = text;
         status.className = `status ${state || ""}`.trim();
+      }
+
+      function clearGitRepairOffer() {
+        const offer = document.getElementById("gitRepairOffer");
+        offer.style.display = "none";
+        offer.innerHTML = "";
+      }
+
+      function getGitRepairSuggestion(results) {
+        const kinds = new Set([
+          "ref_lock",
+          "dangling_ref",
+          "resolve_ref_failed",
+          "ref_repair_failed",
+        ]);
+        for (let idx = results.length - 1; idx >= 0; idx -= 1) {
+          const result = results[idx];
+          if (result.action === "git.fetch" && !result.ok) {
+            if (result.error_kind && kinds.has(result.error_kind)) {
+              return {
+                message:
+                  result.message ||
+                  "Local remote refs appear inconsistent. Reparatur kann helfen.",
+              };
+            }
+          }
+        }
+        return null;
+      }
+
+      function updateGitRepairOffer(results) {
+        const suggestion = getGitRepairSuggestion(results);
+        const offer = document.getElementById("gitRepairOffer");
+        if (!suggestion) {
+          clearGitRepairOffer();
+          return;
+        }
+        offer.style.display = "block";
+        offer.replaceChildren();
+        const header = document.createElement("div");
+        const strong = document.createElement("strong");
+        strong.textContent = "Fix anbieten:";
+        const message = document.createElement("span");
+        message.textContent = ` ${suggestion.message}`;
+        header.append(strong, message);
+        const row = document.createElement("div");
+        row.className = "row";
+        row.style.marginTop = "6px";
+        const button = document.createElement("button");
+        button.textContent = "Repair Stage A (prune + fetch)";
+        button.onclick = gitRepairStageA;
+        row.append(button);
+        const note = document.createElement("div");
+        note.className = "small";
+        note.textContent = "Nur lokale Tracking-Refs; keine Remote-Branches.";
+        offer.append(header, row, note);
       }
     </script>
   </body>
