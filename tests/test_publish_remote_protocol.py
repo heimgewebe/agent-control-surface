@@ -141,6 +141,7 @@ def test_precheck_uses_origin_refs_and_fetches() -> None:
             ]
             for call in mock_run.call_args_list
         )
+        assert has_pr_create_head(mock_run.call_args_list, "feature")
 
 
 def test_execute_publish_origin_upstream_uses_upstream_branch() -> None:
