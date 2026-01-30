@@ -485,12 +485,13 @@ def get_git_state(path: Path) -> tuple[str | None, str | None]:
             if branch and head:
                 break
 
-        if branch == "(detached)":
+        if not branch or branch == "(detached)" or branch == "(unknown)" or branch.startswith("(detached"):
             branch = "HEAD"
 
         if head == "(initial)":
             head = None
-            branch = "HEAD"
+            if not branch:
+                branch = "HEAD"
 
         return branch or None, head or None
     except Exception:
