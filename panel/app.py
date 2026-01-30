@@ -1224,20 +1224,39 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         remote_name, _, branch_name = upstream_value.partition("/")
         if remote_name == "origin" and branch_name:
             upstream_branch = branch_name
-    upstream_message = (
-        f"Using upstream {upstream_value}."
-        if upstream_branch
-        else "Upstream not set; using local branch for remote lookup."
-    )
+    if upstream.code != 0:
+        upstream_message = "Upstream not available; falling back to local branch for origin lookup."
+        raw_stderr = upstream.stderr or ""
+        if raw_stderr:
+            sanitized_stderr = re.sub(r"\s+", " ", raw_stderr).strip()
+            if len(sanitized_stderr) > 80:
+                sanitized_stderr = f"{sanitized_stderr[:77]}..."
+            if sanitized_stderr:
+                upstream_message = f"{upstream_message} (git: {sanitized_stderr})"
+        upstream_error_kind = "upstream_unavailable"
+    elif not upstream_value:
+        upstream_message = "No upstream configured; falling back to local branch for origin lookup."
+        upstream_error_kind = "upstream_missing"
+    elif upstream_branch:
+        upstream_message = f"Using upstream origin/{upstream_branch}."
+        upstream_error_kind = None
+    else:
+        sanitized_upstream = re.sub(r"\s+", " ", upstream_value).strip()
+        if len(sanitized_upstream) > 80:
+            sanitized_upstream = f"{sanitized_upstream[:77]}..."
+        upstream_message = (
+            f"Upstream is '{sanitized_upstream}' (non-origin); using local branch for origin lookup."
+        )
+        upstream_error_kind = "upstream_non_origin"
     upstream_result = build_action_result(
-        ok=True,
+        ok=upstream.code == 0,
         action="git.branch.upstream",
         repo=target.key,
         correlation_id=correlation_id,
         stdout=upstream.stdout,
         stderr=upstream.stderr,
         code=upstream.code,
-        error_kind=None,
+        error_kind=upstream_error_kind,
         message=upstream_message,
         repo_path=target.path,
     )
