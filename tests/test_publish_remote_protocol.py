@@ -11,9 +11,13 @@ def has_pr_create_head(call_args_list, expected_head, expected_base="main"):
             continue
         if "--base" not in cmd or "--head" not in cmd:
             continue
-        if cmd[cmd.index("--base") + 1] != expected_base:
+        base_idx = cmd.index("--base")
+        head_idx = cmd.index("--head")
+        if base_idx + 1 >= len(cmd) or head_idx + 1 >= len(cmd):
             continue
-        if cmd[cmd.index("--head") + 1] != expected_head:
+        if cmd[base_idx + 1] != expected_base:
+            continue
+        if cmd[head_idx + 1] != expected_head:
             continue
         return True
     return False

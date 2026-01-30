@@ -1224,16 +1224,14 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         remote_name, _, branch_name = upstream_value.partition("/")
         if remote_name == "origin" and branch_name:
             upstream_branch = branch_name
-    sanitized_upstream = re.sub(r"\s+", " ", upstream_value).strip()
-    if len(sanitized_upstream) > 80:
-        sanitized_upstream = f"{sanitized_upstream[:77]}..."
-    sanitized_stderr = re.sub(r"\s+", " ", (upstream.stderr or "")).strip()
-    if len(sanitized_stderr) > 80:
-        sanitized_stderr = f"{sanitized_stderr[:77]}..."
     if upstream.code != 0:
         upstream_message = "Upstream not available; falling back to local branch for origin lookup."
-        if sanitized_stderr:
-            upstream_message = f"{upstream_message} (git: {sanitized_stderr})"
+        if upstream.stderr:
+            sanitized_stderr = re.sub(r"\s+", " ", upstream.stderr).strip()
+            if len(sanitized_stderr) > 80:
+                sanitized_stderr = f"{sanitized_stderr[:77]}..."
+            if sanitized_stderr:
+                upstream_message = f"{upstream_message} (git: {sanitized_stderr})"
         upstream_error_kind = "upstream_unavailable"
     elif not upstream_value:
         upstream_message = "No upstream configured; falling back to local branch for origin lookup."
@@ -1242,6 +1240,9 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         upstream_message = f"Using upstream origin/{upstream_branch}."
         upstream_error_kind = None
     else:
+        sanitized_upstream = re.sub(r"\s+", " ", upstream_value).strip()
+        if len(sanitized_upstream) > 80:
+            sanitized_upstream = f"{sanitized_upstream[:77]}..."
         upstream_message = (
             f"Upstream is '{sanitized_upstream}' (non-origin); using local branch for origin lookup."
         )
