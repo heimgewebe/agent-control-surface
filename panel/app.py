@@ -1226,8 +1226,9 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             upstream_branch = branch_name
     if upstream.code != 0:
         upstream_message = "Upstream not available; falling back to local branch for origin lookup."
-        if upstream.stderr:
-            sanitized_stderr = re.sub(r"\s+", " ", upstream.stderr).strip()
+        raw_stderr = upstream.stderr or ""
+        if raw_stderr:
+            sanitized_stderr = re.sub(r"\s+", " ", raw_stderr).strip()
             if len(sanitized_stderr) > 80:
                 sanitized_stderr = f"{sanitized_stderr[:77]}..."
             if sanitized_stderr:
