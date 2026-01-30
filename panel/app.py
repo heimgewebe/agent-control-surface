@@ -36,6 +36,8 @@ JOB_MAX_ENTRIES = 200
 MAX_JOB_LOG_LINES = 1000
 MAX_LOG_LINE_CHARS = 4000
 MAX_OUTPUT_CHARS = 50000
+# Backwards-compatible alias for older imports.
+MAX_STDOUT_CHARS = MAX_OUTPUT_CHARS
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
 
 
@@ -301,7 +303,7 @@ def api_git_health_repair_stage_a(repo: str = Query(...)) -> JSONResponse:
 @app.post("/api/git/health/repair/stage-b", response_class=JSONResponse)
 def api_git_health_repair_stage_b(
     repo: str = Query(...),
-    req: GitRepairStageBReq = Body(GitRepairStageBReq()),
+    req: GitRepairStageBReq = Body(default_factory=GitRepairStageBReq),
 ) -> JSONResponse:
     correlation_id = new_correlation_id()
     job_id = str(uuid.uuid4())

@@ -804,13 +804,24 @@
           return;
         }
         offer.style.display = "block";
-        offer.innerHTML = `
-          <div><strong>Fix anbieten:</strong> ${suggestion.message}</div>
-          <div class="row" style="margin-top: 6px;">
-            <button onclick="gitRepairStageA()">Repair Stage A (prune + fetch)</button>
-          </div>
-          <div class="small">Nur lokale Tracking-Refs; keine Remote-Branches.</div>
-        `;
+        offer.replaceChildren();
+        const header = document.createElement("div");
+        const strong = document.createElement("strong");
+        strong.textContent = "Fix anbieten:";
+        const message = document.createElement("span");
+        message.textContent = ` ${suggestion.message}`;
+        header.append(strong, message);
+        const row = document.createElement("div");
+        row.className = "row";
+        row.style.marginTop = "6px";
+        const button = document.createElement("button");
+        button.textContent = "Repair Stage A (prune + fetch)";
+        button.onclick = gitRepairStageA;
+        row.append(button);
+        const note = document.createElement("div");
+        note.className = "small";
+        note.textContent = "Nur lokale Tracking-Refs; keine Remote-Branches.";
+        offer.append(header, row, note);
       }
     </script>
   </body>
