@@ -39,6 +39,8 @@ MAX_OUTPUT_CHARS = 50000
 # Backwards-compatible alias for older imports.
 MAX_STDOUT_CHARS = MAX_OUTPUT_CHARS
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
+BRANCH_HEAD_PREFIX = "# branch.head "
+BRANCH_OID_PREFIX = "# branch.oid "
 
 
 class JobState(BaseModel):
@@ -629,8 +631,27 @@ def new_correlation_id() -> str:
 
 def get_git_state(path: Path) -> tuple[str | None, str | None]:
     try:
-        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path, timeout=20).stdout.strip()
-        head = run(["git", "rev-parse", "HEAD"], cwd=path, timeout=20).stdout.strip()
+        res = run(["git", "status", "--porcelain=v2", "--branch", "-uno"], cwd=path, timeout=20)
+        if res.code != 0:
+            return None, None
+
+        branch = None
+        head = None
+
+        for line in res.stdout.splitlines():
+            if line.startswith(BRANCH_HEAD_PREFIX):
+                branch = line[len(BRANCH_HEAD_PREFIX) :].strip()
+            elif line.startswith(BRANCH_OID_PREFIX):
+                head = line[len(BRANCH_OID_PREFIX) :].strip()
+            if branch and head:
+                break
+
+        if not branch or branch == "(unknown)" or branch.startswith("(detached"):
+            branch = "HEAD"
+
+        if head == "(initial)":
+            head = None
+
         return branch or None, head or None
     except Exception:
         return None, None
@@ -1580,13 +1601,13 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
     if not push_ok:
         return False
     head_branch, _ = get_git_state(target.path)
-    if not head_branch:
+    if not head_branch or head_branch == "HEAD":
         result = build_action_result(
             ok=False,
             action="gh.pr.create",
             repo=target.key,
             correlation_id=correlation_id,
-            message="Unable to determine head branch for PR creation.",
+            message="Unable to determine head branch for PR creation (HEAD detached or unknown).",
             error_kind="git_failed",
             code=1,
             repo_path=target.path,
