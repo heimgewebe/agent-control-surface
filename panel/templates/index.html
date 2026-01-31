@@ -187,6 +187,36 @@
       <pre id="gitOut"></pre>
     </section>
 
+    <section class="section" id="ops-panel">
+      <h2>Ops / Git Health (Audit)</h2>
+      <div class="row">
+        <button onclick="auditGit()" data-repo-required="true">Audit Git</button>
+      </div>
+      <div id="auditStatus" class="status"></div>
+
+      <!-- JSON Viewer / Result Display -->
+      <div id="auditResultContainer" style="display: none; margin-top: 12px;">
+        <div class="row small">
+          <strong>Status:</strong> <span id="auditMetaStatus"></span>
+          &nbsp;|&nbsp;
+          <strong>Branch:</strong> <span id="auditMetaBranch"></span>
+          &nbsp;|&nbsp;
+          <strong>Upstream:</strong> <span id="auditMetaUpstream"></span>
+        </div>
+
+        <div class="row" style="margin-top: 8px;">
+          <button onclick="toggleAuditJson()" class="small">JSON anzeigen/verbergen</button>
+          <button onclick="copyToClipboard('auditJson')" class="small">JSON kopieren</button>
+        </div>
+        <pre id="auditJson" style="display: none;"></pre>
+
+        <div id="auditRoutines" class="callout" style="display: none; margin-top: 12px;">
+          <strong>Vorgeschlagene Routinen:</strong>
+          <ul id="auditRoutinesList" style="margin: 4px 0 0 16px; padding: 0;"></ul>
+        </div>
+      </div>
+    </section>
+
     <script>
       async function api(path, body) {
         const res = await fetch(path, {
@@ -829,6 +859,117 @@
         note.className = "small";
         note.textContent = "Nur lokale Tracking-Refs; keine Remote-Branches.";
         offer.append(header, row, note);
+      }
+
+      let auditJobId = null;
+      let auditPoll = null;
+
+      async function auditGit() {
+        const repoValue = ensureRepo((message) => {
+          setAuditStatus(`❌ ${message}`, "error");
+        });
+        if (!repoValue) return;
+
+        setAuditStatus("Audit gestartet…", "warn");
+        document.getElementById("auditResultContainer").style.display = "none";
+        document.getElementById("auditRoutines").style.display = "none";
+        document.getElementById("auditJson").textContent = "";
+
+        try {
+          const res = await fetch(`/api/audit/git?repo=${encodeURIComponent(repoValue)}`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(formatErrorMessage(txt));
+          }
+          const data = await res.json();
+          auditJobId = data.job_id;
+          setAuditStatus(`Audit läuft (${data.job_id})…`, "warn");
+          startAuditPolling();
+        } catch (error) {
+          setAuditStatus(`❌ Audit fehlgeschlagen: ${error.message}`, "error");
+        }
+      }
+
+      function startAuditPolling() {
+        if (auditPoll) clearInterval(auditPoll);
+        auditPoll = setInterval(async () => {
+          if (!auditJobId) return;
+          try {
+            const res = await fetch(`/api/jobs/${auditJobId}`);
+            if (!res.ok) throw new Error("Job status fetch failed");
+            const data = await res.json();
+
+            if (data.status === "done") {
+              clearInterval(auditPoll);
+              const result = data.results.find((r) => r.action === "audit.git");
+              if (result && result.audit) {
+                renderAudit(result.audit);
+                setAuditStatus("Audit abgeschlossen.", "success");
+              } else if (result) {
+                setAuditStatus(
+                  `❌ Audit beendet, aber kein Ergebnis: ${result.message}`,
+                  "error"
+                );
+              } else {
+                setAuditStatus("❌ Audit beendet ohne Ergebnis.", "error");
+              }
+            } else if (data.status === "error") {
+              clearInterval(auditPoll);
+              setAuditStatus("❌ Audit fehlgeschlagen (Job Error).", "error");
+            }
+          } catch (e) {
+            setAuditStatus(`⚠️ Polling error: ${e.message}`, "warn");
+          }
+        }, 1000);
+      }
+
+      function renderAudit(audit) {
+        document.getElementById("auditResultContainer").style.display = "block";
+        document.getElementById("auditJson").textContent = JSON.stringify(audit, null, 2);
+
+        const statusSpan = document.getElementById("auditMetaStatus");
+        statusSpan.textContent = audit.status.toUpperCase();
+        statusSpan.className =
+          audit.status === "ok"
+            ? "status success"
+            : audit.status === "warn"
+            ? "status warn"
+            : "status error";
+
+        document.getElementById("auditMetaBranch").textContent =
+          audit.facts.local_branch || "(detached)";
+
+        const ups = audit.facts.upstream;
+        document.getElementById("auditMetaUpstream").textContent = ups ? ups.name : "(none)";
+
+        const routines = audit.suggested_routines || [];
+        const routinesContainer = document.getElementById("auditRoutines");
+        const routinesList = document.getElementById("auditRoutinesList");
+        routinesList.replaceChildren();
+
+        if (routines.length > 0) {
+          routinesContainer.style.display = "block";
+          routines.forEach((r) => {
+            const li = document.createElement("li");
+            li.textContent = `${r.id} (${r.risk}): ${r.reason}`;
+            routinesList.appendChild(li);
+          });
+        } else {
+          routinesContainer.style.display = "none";
+        }
+      }
+
+      function setAuditStatus(text, state) {
+        const el = document.getElementById("auditStatus");
+        el.textContent = text;
+        el.className = `status ${state || ""}`.trim();
+      }
+
+      function toggleAuditJson() {
+        const el = document.getElementById("auditJson");
+        el.style.display = el.style.display === "none" ? "block" : "none";
       }
     </script>
   </body>

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
+from .ops import AuditGit, run_git_audit
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
@@ -89,6 +90,7 @@ class ActionResult(BaseModel):
     code: int | None = None
     error_kind: str | None = None
     message: str | None = None
+    audit: dict[str, Any] | None = None
     ts: str
     duration_ms: int | None = None
     correlation_id: str
@@ -327,6 +329,20 @@ def api_git_health_repair_stage_c(repo: str = Query(...)) -> JSONResponse:
         JOBS[job_id] = job_state
         JOB_CREATED_AT[job_id] = time.time()
     JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.repair.stage_c", None)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/audit/git", response_class=JSONResponse)
+def api_audit_git(repo: str = Query(...)) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_audit_job, job_id, correlation_id, repo)
     payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
     return JSONResponse(payload.model_dump(), status_code=202)
 
@@ -1188,6 +1204,56 @@ def push_action(req: GitPushReq) -> tuple[ActionResult, int]:
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
     return result, 200 if ok else 500
+
+
+def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
+    set_job_status(job_id, "running")
+    start = time.monotonic()
+    try:
+        target = get_repo(repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        record_job_result(job_id, result)
+        set_job_status(job_id, "error")
+        return
+
+    try:
+        audit_result = run_git_audit(target.key, target.path, correlation_id)
+        # Wrap audit result in ActionResult
+        result = build_action_result(
+            ok=audit_result.status != "error",
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=f"Audit completed with status: {audit_result.status}",
+            error_kind=None if audit_result.status != "error" else "audit_failed",
+            repo_path=target.path,
+        )
+        # Attach the full audit object
+        result.audit = audit_result.model_dump()
+        result.duration_ms = int((time.monotonic() - start) * 1000)
+    except Exception as exc:
+        result = build_action_result(
+            ok=False,
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="internal",
+            code=1,
+            repo_path=target.path,
+        )
+
+    record_job_result(job_id, result)
+    set_job_status(job_id, "done" if result.ok else "error")
 
 
 def run_git_health_job(

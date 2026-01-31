@@ -81,7 +81,8 @@ def test_repair_stage_b_allows_missing_refs() -> None:
 
 def test_repair_stage_b_rejects_invalid_base_branch() -> None:
     target = MagicMock(key="metarepo", path=Path("/tmp/mock"))
-    with patch("panel.app.run") as mock_run:
+    with patch("panel.app.run") as mock_run, \
+         patch("panel.app.get_git_state", return_value=("main", "abc")):
         result = git_remote_repair_stage_b(target, "corr-1", "invalid branch", True)
 
     assert not result.ok
