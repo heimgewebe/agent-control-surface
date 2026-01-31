@@ -110,8 +110,9 @@ def test_run_wgx_audit_git_stdout_flag(monkeypatch):
 
     monkeypatch.setattr("panel.ops.run", _run)
     # This should succeed by parsing the mocked MOCK_AUDIT_JSON as stdout
-    run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
     assert called_with_flag
+    assert result.status == "ok"
 
 def test_token_mismatch_repo(mock_run_wgx):
     """Test that token validation fails if repo or routine ID mismatches."""

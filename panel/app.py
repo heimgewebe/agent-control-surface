@@ -44,6 +44,7 @@ allow_creds = True
 if _origins_env == "*" or "*" in cors_origins:
     # Warning: Wildcard origin with credentials is not allowed by browsers.
     # Disabling credentials for safety.
+    print("WARNING: CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests.")
     allow_creds = False
 
 app.add_middleware(

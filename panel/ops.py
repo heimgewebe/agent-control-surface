@@ -144,10 +144,14 @@ def run_wgx_audit_git(
     # If --stdout-json is requested, we assume stdout is the JSON.
     if stdout_json:
         try:
+            # Robust parsing: try to find the JSON object if there's extra noise
+            # If strictly valid, json.loads works. If not, we might fail.
+            # We stick to json.loads(output) as the contract for --stdout-json implies pure JSON.
             audit_data = json.loads(output)
         except json.JSONDecodeError:
              if res.code != 0:
                  raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout is not valid JSON: {res.stderr or output[:200]}")
+             # If exit code 0 but invalid JSON, it's a protocol violation
              raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
     else:
         # File artifact mode
