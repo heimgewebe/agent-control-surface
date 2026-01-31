@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -357,7 +357,13 @@ def combine_output(result: Any) -> str:
     return output
 
 
-def classify_git_ref_error(stderr: str) -> dict[str, str | None] | None:
+class GitRefError(TypedDict):
+    error_kind: str
+    hint: str
+    affected_ref: str | None
+
+
+def classify_git_ref_error(stderr: str) -> GitRefError | None:
     if not stderr:
         return None
     match = re.search(r"cannot lock ref '([^']+)'", stderr)

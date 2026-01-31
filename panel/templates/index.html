@@ -778,7 +778,7 @@
       function clearGitRepairOffer() {
         const offer = document.getElementById("gitRepairOffer");
         offer.style.display = "none";
-        offer.innerHTML = "";
+        offer.replaceChildren();
       }
 
       function getGitRepairSuggestion(results) {

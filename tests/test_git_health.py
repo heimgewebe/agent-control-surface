@@ -135,7 +135,7 @@ def test_publish_fetch_ref_lock_sets_error_kind() -> None:
          patch("panel.app.git_status_porcelain", return_value=[]), \
          patch("panel.app.run", side_effect=run_side_effect), \
          patch("panel.app.record_job_result") as mock_record:
-        mock_get_repo.return_value = MagicMock(key="metarepo", path="/tmp/mock")
+        mock_get_repo.return_value = MagicMock(key="metarepo", path=Path("/tmp/mock"))
 
         req = PublishOptions(branch="feature")
         execute_publish("job-1", "corr-1", "metarepo", req)
