@@ -1228,7 +1228,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             action="gh.pr.create",
             repo=target.key,
             correlation_id=correlation_id,
-            message="Unable to determine head branch for PR creation (detached HEAD).",
+            message="Unable to determine head branch for PR creation (HEAD detached or unknown).",
             error_kind="git_failed",
             code=1,
             repo_path=target.path,
