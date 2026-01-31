@@ -114,12 +114,16 @@ def now_iso() -> str:
 # Operations (WGX Wrappers)
 # ------------------------------------------------------------------------------
 
-def run_wgx_audit_git(repo_key: str, repo_path: Path, correlation_id: str) -> AuditGit:
+def run_wgx_audit_git(
+    repo_key: str, repo_path: Path, correlation_id: str, stdout_json: bool = False
+) -> AuditGit:
     """
     Executes `wgx audit git --repo ...` via the runner.
     Parses the output (JSON path or JSON) and returns a validated AuditGit object.
     """
     cmd = ["wgx", "audit", "git", "--repo", repo_key, "--correlation-id", correlation_id]
+    if stdout_json:
+        cmd.append("--stdout-json")
 
     res = run(cmd, cwd=repo_path, timeout=60)
 
@@ -181,6 +185,33 @@ def run_wgx_audit_git(repo_key: str, repo_path: Path, correlation_id: str) -> Au
         return audit
     except Exception as e:
         raise RuntimeError(f"Audit artifact validation failed: {e}")
+
+
+def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
+    """
+    Scans .wgx/out/ for the most recent audit.git.v1.*.json artifact.
+    """
+    out_dir = repo_path / ".wgx" / "out"
+    if not out_dir.exists():
+        return None
+
+    # Pattern: audit.git.v1*.json to catch audit.git.v1.json and audit.git.v1.<correlation_id>.json
+    candidates = list(out_dir.glob("audit.git.v1*.json"))
+    if not candidates:
+        return None
+
+    # Sort by modification time descending
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    for cand in candidates:
+        try:
+            with open(cand, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return AuditGit.model_validate(data)
+        except Exception:
+            continue
+
+    return None
 
 
 def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> tuple[dict[str, Any], str]:

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -23,6 +24,7 @@ from starlette.requests import Request
 from .logging import log_action, redact_secrets
 from .ops import (
     AuditGit,
+    get_latest_audit_artifact,
     run_wgx_audit_git,
     run_wgx_routine_preview,
     run_wgx_routine_apply,
@@ -31,6 +33,19 @@ from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
 app = FastAPI(title="agent-control-surface")
+
+# CORS Configuration
+# Allow origins via env var (comma-separated), default to "*" for convenience in prototype/dev.
+# In production, this should be restricted to the Leitstand URL.
+cors_origins = os.getenv("ACS_CORS_ALLOW_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
@@ -359,6 +374,29 @@ def api_audit_git(repo: str = Query(...)) -> JSONResponse:
     JOB_EXECUTOR.submit(run_audit_job, job_id, correlation_id, repo)
     payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
     return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.get("/api/audit/git/sync", response_class=JSONResponse)
+def api_audit_git_sync(repo: str = Query(...)) -> JSONResponse:
+    """Synchronous audit endpoint for viewers like Leitstand."""
+    target = get_repo(repo)
+    correlation_id = new_correlation_id()
+    try:
+        # Use stdout_json=True to get result directly without relying on file artifact coordination
+        result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=True)
+        return JSONResponse(result.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/audit/git/latest", response_class=JSONResponse)
+def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
+    """Returns the most recent audit artifact found in the repo."""
+    target = get_repo(repo)
+    result = get_latest_audit_artifact(target.path)
+    if not result:
+        raise HTTPException(status_code=404, detail="No audit artifact found")
+    return JSONResponse(result.model_dump())
 
 
 @app.post("/api/routine/preview", response_class=JSONResponse)

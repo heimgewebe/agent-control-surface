@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit
+from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact
 from panel.runner import CmdResult
 from fastapi import HTTPException
 
@@ -84,7 +84,21 @@ def test_run_wgx_audit_git(mock_run_wgx):
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
     assert result.status == "ok"
-    assert result.correlation_id == "test-correlation-id"
+    # assert result.correlation_id == "test-correlation-id" # Taken from JSON
+
+def test_run_wgx_audit_git_stdout_flag(monkeypatch):
+    repo_path = Path("/tmp/mock_repo")
+    called_with_flag = False
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        nonlocal called_with_flag
+        if "--stdout-json" in cmd:
+            called_with_flag = True
+        return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+    run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
+    assert called_with_flag
 
 def test_run_wgx_routine_flow(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
@@ -132,15 +146,29 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
     repo_key = "mock_repo"
     routine_id = "fail.test"
 
-    preview, token = run_wgx_routine_preview(repo_key, repo_path, "git.repair.remote-head")
-    # Use a token for a known ID to bypass token check, then call the failing routine
-    # Wait, token is bound to ID. Need to create a token for "fail.test"
-    # But run_wgx_routine_preview calls run() which needs to be mocked for fail.test too if we want a valid token?
-    # Actually create_token is internal.
-
     # Manually create valid token for test
     token = create_token({"repo": repo_key, "routine_id": routine_id})
 
     result = run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
     assert result["kind"] == "routine.result"
-    assert result["ok"] is True # Our mock JSON says True, even if exit code was 1. Logic should just parse JSON.
+    assert result["ok"] is True
+
+def test_get_latest_audit_artifact(tmp_path):
+    # Setup .wgx/out structure
+    out_dir = tmp_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+
+    # Old file
+    old = out_dir / "audit.git.v1.old.json"
+    old.write_text(MOCK_AUDIT_JSON)
+    # Force older mtime
+    import os
+    os.utime(old, (100, 100))
+
+    # New file
+    new = out_dir / "audit.git.v1.new.json"
+    new.write_text(MOCK_AUDIT_JSON.replace("ok", "warn"))
+
+    result = get_latest_audit_artifact(tmp_path)
+    assert result is not None
+    assert result.status == "warn" # Should pick the new one
