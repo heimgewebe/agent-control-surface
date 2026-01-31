@@ -407,8 +407,11 @@ def run_git_command_sequence(
     *,
     timeout: int,
     allow_failures: set[int] | None = None,
+    allow_failure_cmds: set[tuple[str, ...]] | None = None,
+    stop_on_error: bool = False,
 ) -> tuple[bool, str, str, int | None, list[str]]:
     allow_failures = allow_failures or set()
+    allow_failure_cmds = allow_failure_cmds or set()
     combined_stdout: list[str] = []
     combined_stderr: list[str] = []
     optional_failures: list[str] = []
@@ -418,6 +421,7 @@ def run_git_command_sequence(
         result = run(cmd, cwd=path, timeout=timeout)
         last_code = result.code
         cmd_line = format_command_line(list(cmd))
+        cmd_key = tuple(cmd)
         stdout_lines = [cmd_line]
         stdout_value = truncate_text(result.stdout.strip(), 20000) if result.stdout else ""
         if stdout_value:
@@ -427,10 +431,12 @@ def run_git_command_sequence(
         if stderr_value:
             combined_stderr.append("\n".join([cmd_line, stderr_value]))
         if result.code != 0:
-            if idx in allow_failures:
+            if idx in allow_failures or cmd_key in allow_failure_cmds:
                 optional_failures.append(cmd_line)
             else:
                 ok = False
+                if stop_on_error:
+                    break
     stdout_combined = truncate_text("\n\n".join(combined_stdout), MAX_OUTPUT_CHARS)
     stderr_combined = truncate_text("\n\n".join(combined_stderr), MAX_OUTPUT_CHARS)
     return ok, stdout_combined, stderr_combined, last_code, optional_failures
@@ -673,12 +679,15 @@ def git_remote_diagnose(target: Repo, correlation_id: str) -> ActionResult:
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     ]
-    allow_failures = {3, 4}
+    allow_failure_cmds = {
+        ("git", "symbolic-ref", "refs/remotes/origin/HEAD"),
+        ("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"),
+    }
     ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
         target.path,
         commands,
         timeout=30,
-        allow_failures=allow_failures,
+        allow_failure_cmds=allow_failure_cmds,
     )
     message = "Git diagnose completed." if ok else "Git diagnose completed with errors."
     if optional_failures:
@@ -709,6 +718,7 @@ def git_remote_repair_stage_a(target: Repo, correlation_id: str) -> ActionResult
         target.path,
         commands,
         timeout=60,
+        stop_on_error=True,
     )
     message = "Repair stage A completed." if ok else "Repair stage A failed."
     if optional_failures:
@@ -751,18 +761,21 @@ def git_remote_repair_stage_b(
         result.duration_ms = int((time.monotonic() - start) * 1000)
         return result
     commands: list[list[str]] = []
-    allow_failures: set[int] = set()
-    commands.append(["git", "update-ref", "-d", "refs/remotes/origin/HEAD"])
-    allow_failures.add(0)
+    allow_failure_cmds: set[tuple[str, ...]] = set()
+    head_delete_cmd = ["git", "update-ref", "-d", "refs/remotes/origin/HEAD"]
+    commands.append(head_delete_cmd)
+    allow_failure_cmds.add(tuple(head_delete_cmd))
     if delete_base_ref:
-        commands.append(["git", "update-ref", "-d", f"refs/remotes/origin/{base_branch}"])
-        allow_failures.add(len(commands) - 1)
+        base_delete_cmd = ["git", "update-ref", "-d", f"refs/remotes/origin/{base_branch}"]
+        commands.append(base_delete_cmd)
+        allow_failure_cmds.add(tuple(base_delete_cmd))
     commands.append(["git", "fetch", "--prune", "origin"])
     ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
         target.path,
         commands,
         timeout=60,
-        allow_failures=allow_failures,
+        allow_failure_cmds=allow_failure_cmds,
+        stop_on_error=True,
     )
     message = "Repair stage B completed." if ok else "Repair stage B failed."
     if optional_failures:
@@ -793,6 +806,7 @@ def git_remote_repair_stage_c(target: Repo, correlation_id: str) -> ActionResult
         target.path,
         commands,
         timeout=60,
+        stop_on_error=True,
     )
     message = "Repair stage C completed." if ok else "Repair stage C failed."
     if optional_failures:
