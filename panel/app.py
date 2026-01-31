@@ -469,6 +469,8 @@ def new_correlation_id() -> str:
 
 
 def get_git_state(path: Path) -> tuple[str | None, str | None]:
+    branch_head_prefix = "# branch.head "
+    branch_oid_prefix = "# branch.oid "
     try:
         res = run(["git", "status", "--porcelain=v2", "--branch", "-uno"], cwd=path, timeout=20)
         if res.code != 0:
@@ -478,10 +480,10 @@ def get_git_state(path: Path) -> tuple[str | None, str | None]:
         head = None
 
         for line in res.stdout.splitlines():
-            if line.startswith("# branch.head "):
-                branch = line[14:].strip()
-            elif line.startswith("# branch.oid "):
-                head = line[13:].strip()
+            if line.startswith(branch_head_prefix):
+                branch = line[len(branch_head_prefix) :].strip()
+            elif line.startswith(branch_oid_prefix):
+                head = line[len(branch_oid_prefix) :].strip()
             if branch and head:
                 break
 
