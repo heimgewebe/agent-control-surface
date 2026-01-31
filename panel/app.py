@@ -35,13 +35,15 @@ from .runner import assert_not_main_branch, run
 app = FastAPI(title="agent-control-surface")
 
 # CORS Configuration
-# Allow origins via env var (comma-separated), default to "*" for convenience in prototype/dev.
-# In production, this should be restricted to the Leitstand URL.
-_origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "*")
+# Allow origins via env var (comma-separated).
+# Default to empty/restricted to prevent accidental exposure in production.
+# For local dev with separate frontend, set ACS_CORS_ALLOW_ORIGINS="http://localhost:5173"
+_origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "")
 cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
 # Browsers reject allow_credentials=True with allow_origins=["*"]
 allow_creds = True
-if _origins_env == "*" or "*" in cors_origins:
+if "*" in cors_origins:
     # Warning: Wildcard origin with credentials is not allowed by browsers.
     # Disabling credentials for safety.
     print("WARNING: CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests.")

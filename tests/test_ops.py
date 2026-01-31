@@ -61,20 +61,27 @@ MOCK_RESULT_JSON = json.dumps({
 def mock_run_wgx(monkeypatch):
     def _run(cmd, cwd, timeout=60, **kwargs):
         # Robust list-based matching
-        if cmd[:4] == ["wgx", "audit", "git", "--repo"] and cmd[4] == "mock_repo":
-            if "--correlation-id" in cmd and "corr-1" in cmd:
+        # Check for audit command
+        if cmd[:3] == ["wgx", "audit", "git"] and "--repo" in cmd:
+             repo_idx = cmd.index("--repo") + 1
+             repo = cmd[repo_idx]
+
+             if repo == "mock_repo":
                  return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+             elif repo == "fail_repo":
+                 return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
 
-        if cmd[:4] == ["wgx", "audit", "git", "--repo"] and cmd[4] == "fail_repo":
-             return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
+        # Check for routine preview
+        if "routine" in cmd and "preview" in cmd:
+            if "git.repair.remote-head" in cmd:
+                return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
 
-        if cmd[:3] == ["wgx", "routine", "git.repair.remote-head"] and cmd[3] == "preview":
-            return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
-        if cmd[:3] == ["wgx", "routine", "git.repair.remote-head"] and cmd[3] == "apply":
-            return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
-
-        if cmd[:3] == ["wgx", "routine", "fail.test"] and cmd[3] == "apply":
-             return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
+        # Check for routine apply
+        if "routine" in cmd and "apply" in cmd:
+            if "git.repair.remote-head" in cmd:
+                return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
+            if "fail.test" in cmd:
+                 return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
 
         return CmdResult(1, "", f"Unknown command: {cmd}", cmd)
 
@@ -173,6 +180,11 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
     assert excinfo.value.status_code == 403
 
 def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
+    """
+    Test that a non-zero exit code is tolerated if valid JSON is returned.
+    This simulates a routine that reports 'ok' in JSON but exits with error code,
+    or just reports a structured error.
+    """
     repo_path = Path("/tmp/mock_repo")
     repo_key = "mock_repo"
     routine_id = "fail.test"
@@ -240,3 +252,4 @@ def test_run_wgx_audit_git_stdout_noise(monkeypatch):
     result = run_wgx_audit_git("mock_repo", repo_path, "corr-test", stdout_json=True)
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
+    assert result.correlation_id == "corr-test"  # verify override

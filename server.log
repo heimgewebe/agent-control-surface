@@ -1,0 +1,16 @@
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [17876]
+INFO:     Started server process [18744]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8099 (Press CTRL+C to quit)
+INFO:     127.0.0.1:48006 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48006 - "POST /api/audit/git?repo=metarepo HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:48006 - "GET /api/jobs/4b8d0d42-0049-4b5b-9b39-f20475f993b3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48006 - "POST /api/routine/preview HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [18744]
