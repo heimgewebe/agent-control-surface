@@ -416,6 +416,7 @@ def run_git_command_sequence(
     allow_failure_cmds: set[tuple[str, ...]] | None = None,
     stop_on_error: bool = False,
 ) -> tuple[bool, str, str, int | None, list[str]]:
+    """Run a list of commands, allowing optional failures by index (legacy) or command."""
     allow_failures = allow_failures or set()
     allow_failure_cmds = allow_failure_cmds or set()
     combined_stdout: list[str] = []
