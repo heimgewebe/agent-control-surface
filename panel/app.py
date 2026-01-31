@@ -36,6 +36,8 @@ MAX_JOB_LOG_LINES = 1000
 MAX_LOG_LINE_CHARS = 4000
 MAX_STDOUT_CHARS = 50000
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
+BRANCH_HEAD_PREFIX = "# branch.head "
+BRANCH_OID_PREFIX = "# branch.oid "
 
 
 class JobState(BaseModel):
@@ -469,8 +471,6 @@ def new_correlation_id() -> str:
 
 
 def get_git_state(path: Path) -> tuple[str | None, str | None]:
-    branch_head_prefix = "# branch.head "
-    branch_oid_prefix = "# branch.oid "
     try:
         res = run(["git", "status", "--porcelain=v2", "--branch", "-uno"], cwd=path, timeout=20)
         if res.code != 0:
@@ -480,10 +480,10 @@ def get_git_state(path: Path) -> tuple[str | None, str | None]:
         head = None
 
         for line in res.stdout.splitlines():
-            if line.startswith(branch_head_prefix):
-                branch = line[len(branch_head_prefix) :].strip()
-            elif line.startswith(branch_oid_prefix):
-                head = line[len(branch_oid_prefix) :].strip()
+            if line.startswith(BRANCH_HEAD_PREFIX):
+                branch = line[len(BRANCH_HEAD_PREFIX) :].strip()
+            elif line.startswith(BRANCH_OID_PREFIX):
+                head = line[len(BRANCH_OID_PREFIX) :].strip()
             if branch and head:
                 break
 
