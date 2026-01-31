@@ -203,3 +203,40 @@ def test_get_latest_audit_artifact(tmp_path):
     result = get_latest_audit_artifact(tmp_path)
     assert result is not None
     assert result.status == "warn" # Should pick the new one
+
+def test_run_wgx_audit_git_file_mode(tmp_path, monkeypatch):
+    """Test that file artifact mode works by reading the file returned in stdout."""
+    repo_path = tmp_path
+
+    # Create the artifact file that wgx would create
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    artifact_path = out_dir / "audit.git.v1.test.json"
+    artifact_path.write_text(MOCK_AUDIT_JSON)
+
+    # Mock run to return the path relative to repo
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        return CmdResult(0, str(Path(".wgx/out/audit.git.v1.test.json")), "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-test")
+    assert isinstance(result, AuditGit)
+    assert result.status == "ok"
+
+def test_run_wgx_audit_git_stdout_noise(monkeypatch):
+    """Test robust JSON extraction when stdout contains noise."""
+    repo_path = Path("/tmp/mock_repo")
+
+    noisy_output = f"[INFO] Starting audit\n{MOCK_AUDIT_JSON}\n[DEBUG] Cleanup done"
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        if "--stdout-json" in cmd:
+             return CmdResult(0, noisy_output, "", cmd)
+        return CmdResult(1, "", "fail", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-test", stdout_json=True)
+    assert isinstance(result, AuditGit)
+    assert result.status == "ok"
