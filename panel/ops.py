@@ -103,7 +103,7 @@ class AuditGit(BaseModel):
     checks: list[AuditCheck]
     uncertainty: Uncertainty
     suggested_routines: list[SuggestedRoutine]
-    correlation_id: str
+    correlation_id: str | None = None
 
 
 def now_iso() -> str:
@@ -116,15 +116,10 @@ def now_iso() -> str:
 
 def run_wgx_audit_git(repo_key: str, repo_path: Path, correlation_id: str) -> AuditGit:
     """
-    Executes `wgx audit git --json` via the runner.
-    Parses the output (JSON) and returns a validated AuditGit object.
+    Executes `wgx audit git --repo ...` via the runner.
+    Parses the output (JSON path or JSON) and returns a validated AuditGit object.
     """
-    # Assumption: `wgx` is in PATH or we use a relative path if it's in the repo.
-    # The prompt implies `wgx` is the tool to use.
-    cmd = ["wgx", "audit", "git", "--json"]
-
-    # We might need to ensure the environment has what wgx needs.
-    # Runner handles CWD.
+    cmd = ["wgx", "audit", "git", "--repo", repo_key, "--correlation-id", correlation_id]
 
     res = run(cmd, cwd=repo_path, timeout=60)
 

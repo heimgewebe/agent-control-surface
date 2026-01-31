@@ -61,12 +61,17 @@ MOCK_RESULT_JSON = json.dumps({
 def mock_run_wgx(monkeypatch):
     def _run(cmd, cwd, timeout=60, **kwargs):
         cmd_str = " ".join(cmd)
-        if "wgx audit git --json" in cmd_str:
+        # Updated match pattern for new CLI args
+        if "wgx audit git --repo mock_repo --correlation-id corr-1" in cmd_str:
             return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
         if "wgx routine git.repair.remote-head preview" in cmd_str:
             return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
         if "wgx routine git.repair.remote-head apply" in cmd_str:
             return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
+
+        # Test case: Non-zero exit but valid JSON output (e.g. routine failure reported as structured result)
+        if "wgx routine fail.test apply" in cmd_str:
+             return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
 
         return CmdResult(1, "", f"Unknown command: {cmd_str}", cmd)
 
@@ -79,7 +84,7 @@ def test_run_wgx_audit_git(mock_run_wgx):
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
     assert result.status == "ok"
-    assert result.correlation_id == "test-correlation-id" # Taken from JSON
+    assert result.correlation_id == "test-correlation-id"
 
 def test_run_wgx_routine_flow(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
@@ -121,3 +126,21 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
         run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
 
     assert excinfo.value.status_code == 403
+
+def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
+    repo_path = Path("/tmp/mock_repo")
+    repo_key = "mock_repo"
+    routine_id = "fail.test"
+
+    preview, token = run_wgx_routine_preview(repo_key, repo_path, "git.repair.remote-head")
+    # Use a token for a known ID to bypass token check, then call the failing routine
+    # Wait, token is bound to ID. Need to create a token for "fail.test"
+    # But run_wgx_routine_preview calls run() which needs to be mocked for fail.test too if we want a valid token?
+    # Actually create_token is internal.
+
+    # Manually create valid token for test
+    token = create_token({"repo": repo_key, "routine_id": routine_id})
+
+    result = run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
+    assert result["kind"] == "routine.result"
+    assert result["ok"] is True # Our mock JSON says True, even if exit code was 1. Logic should just parse JSON.
