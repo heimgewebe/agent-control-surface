@@ -37,11 +37,17 @@ app = FastAPI(title="agent-control-surface")
 # CORS Configuration
 # Allow origins via env var (comma-separated), default to "*" for convenience in prototype/dev.
 # In production, this should be restricted to the Leitstand URL.
-cors_origins = os.getenv("ACS_CORS_ALLOW_ORIGINS", "*").split(",")
+_origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "*")
+cors_origins = _origins_env.split(",")
+# Browsers reject allow_credentials=True with allow_origins=["*"]
+allow_creds = True
+if _origins_env == "*":
+    allow_creds = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=True,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
