@@ -127,11 +127,8 @@ def run_wgx_audit_git(
 
     res = run(cmd, cwd=repo_path, timeout=60)
 
-    if res.code != 0:
-        # If wgx fails, we try to parse stdout/stderr to see if it emitted a JSON error
-        # But mostly we'll just raise or return a synthetic error.
-        raise RuntimeError(f"WGX audit failed (code {res.code}): {res.stderr or res.stdout}")
-
+    # Even if res.code != 0, we attempt to read the artifact or stdout,
+    # because WGX might report "partial failure" (e.g. check failed) as structured JSON.
     output = res.stdout.strip()
 
     # WGX might return the path to the JSON file, or the JSON itself.
@@ -170,6 +167,9 @@ def run_wgx_audit_git(
                 except Exception as e:
                     raise RuntimeError(f"Failed to read default audit artifact: {e}")
             else:
+                # Only raise if we really have no JSON and exit code was error
+                if res.code != 0:
+                    raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {res.stderr or output[:200]}")
                 raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
 
     # Validate with Pydantic

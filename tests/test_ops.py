@@ -64,6 +64,11 @@ def mock_run_wgx(monkeypatch):
         # Updated match pattern for new CLI args
         if "wgx audit git --repo mock_repo --correlation-id corr-1" in cmd_str:
             return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+
+        # Test case: Non-zero exit but valid JSON output for audit
+        if "wgx audit git --repo fail_repo --correlation-id corr-2" in cmd_str:
+             return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
+
         if "wgx routine git.repair.remote-head preview" in cmd_str:
             return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
         if "wgx routine git.repair.remote-head apply" in cmd_str:
@@ -85,6 +90,13 @@ def test_run_wgx_audit_git(mock_run_wgx):
     assert result.repo == "mock_repo"
     assert result.status == "ok"
     # assert result.correlation_id == "test-correlation-id" # Taken from JSON
+
+def test_run_wgx_audit_git_nonzero_exit_with_json(mock_run_wgx):
+    repo_path = Path("/tmp/fail_repo")
+    result = run_wgx_audit_git("fail_repo", repo_path, "corr-2")
+
+    assert isinstance(result, AuditGit)
+    assert result.status == "error"
 
 def test_run_wgx_audit_git_stdout_flag(monkeypatch):
     repo_path = Path("/tmp/mock_repo")
