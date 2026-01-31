@@ -42,6 +42,8 @@ cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 # Browsers reject allow_credentials=True with allow_origins=["*"]
 allow_creds = True
 if _origins_env == "*" or "*" in cors_origins:
+    # Warning: Wildcard origin with credentials is not allowed by browsers.
+    # Disabling credentials for safety.
     allow_creds = False
 
 app.add_middleware(

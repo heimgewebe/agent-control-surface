@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .runner import run
 
@@ -58,6 +58,7 @@ def validate_and_consume_token(token: str, repo: str, routine_id: str) -> bool:
 # ------------------------------------------------------------------------------
 
 class AuditFacts(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     head_sha: str | None
     head_ref: str | None
     is_detached_head: bool
@@ -71,6 +72,7 @@ class AuditFacts(BaseModel):
 
 
 class AuditCheck(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     id: str
     status: Literal["ok", "warn", "error"]
     message: str
@@ -78,6 +80,7 @@ class AuditCheck(BaseModel):
 
 
 class SuggestedRoutine(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     id: str
     risk: Literal["low", "medium", "high"]
     mutating: bool
@@ -87,12 +90,14 @@ class SuggestedRoutine(BaseModel):
 
 
 class Uncertainty(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     level: float
     causes: list[dict[str, str]]
     meta: Literal["productive", "avoidable", "systemic"]
 
 
 class AuditGit(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     kind: Literal["audit.git"] = "audit.git"
     schema_version: Literal["v1"] = "v1"
     ts: str
@@ -132,45 +137,54 @@ def run_wgx_audit_git(
     output = res.stdout.strip()
 
     # WGX might return the path to the JSON file, or the JSON itself.
-    # The blueprint says: "|--> audit.git.json" and "writes artifact".
-    # It also says: "run(['wgx','audit','git','--json', ...]) ... liest den zurückgegebenen Pfad (stdout) oder .wgx/out/audit.git.v1.json"
-
-    json_path = Path(output) if output.endswith(".json") else None
 
     audit_data = None
+    json_path = None
 
-    if json_path and (repo_path / json_path).exists():
-        # It's a relative path in the repo
-        try:
-            with open(repo_path / json_path, "r", encoding="utf-8") as f:
-                audit_data = json.load(f)
-        except Exception as e:
-            raise RuntimeError(f"Failed to read audit artifact at {json_path}: {e}")
-    elif json_path and Path(output).exists():
-         # Absolute path? Unlikely but possible
-        try:
-            with open(Path(output), "r", encoding="utf-8") as f:
-                audit_data = json.load(f)
-        except Exception as e:
-            raise RuntimeError(f"Failed to read audit artifact at {output}: {e}")
-    else:
-        # Maybe stdout IS the JSON?
+    # If --stdout-json is requested, we assume stdout is the JSON.
+    if stdout_json:
         try:
             audit_data = json.loads(output)
         except json.JSONDecodeError:
+             if res.code != 0:
+                 raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout is not valid JSON: {res.stderr or output[:200]}")
+             raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
+    else:
+        # File artifact mode
+        json_path = Path(output) if output.endswith(".json") else None
+
+        if json_path and (repo_path / json_path).exists():
+            # It's a relative path in the repo
+            try:
+                with open(repo_path / json_path, "r", encoding="utf-8") as f:
+                    audit_data = json.load(f)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read audit artifact at {json_path}: {e}")
+        elif json_path and Path(output).exists():
+             # Absolute path? Unlikely but possible
+            try:
+                with open(Path(output), "r", encoding="utf-8") as f:
+                    audit_data = json.load(f)
+            except Exception as e:
+                raise RuntimeError(f"Failed to read audit artifact at {output}: {e}")
+        else:
             # Fallback: check default location .wgx/out/audit.git.v1.json
-            default_path = repo_path / ".wgx/out/audit.git.v1.json"
-            if default_path.exists():
-                try:
-                    with open(default_path, "r", encoding="utf-8") as f:
-                        audit_data = json.load(f)
-                except Exception as e:
-                    raise RuntimeError(f"Failed to read default audit artifact: {e}")
-            else:
-                # Only raise if we really have no JSON and exit code was error
-                if res.code != 0:
-                    raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {res.stderr or output[:200]}")
-                raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
+            # Or try parsing output as JSON if it's not a path (fallback behavior)
+            try:
+                audit_data = json.loads(output)
+            except json.JSONDecodeError:
+                default_path = repo_path / ".wgx/out/audit.git.v1.json"
+                if default_path.exists():
+                    try:
+                        with open(default_path, "r", encoding="utf-8") as f:
+                            audit_data = json.load(f)
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to read default audit artifact: {e}")
+                else:
+                    # Only raise if we really have no JSON and exit code was error
+                    if res.code != 0:
+                        raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {res.stderr or output[:200]}")
+                    raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
 
     # Validate with Pydantic
     try:

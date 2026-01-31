@@ -109,8 +109,30 @@ def test_run_wgx_audit_git_stdout_flag(monkeypatch):
         return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
+    # This should succeed by parsing the mocked MOCK_AUDIT_JSON as stdout
     run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
     assert called_with_flag
+
+def test_token_mismatch_repo(mock_run_wgx):
+    """Test that token validation fails if repo or routine ID mismatches."""
+    repo_path = Path("/tmp/mock_repo")
+    repo_key = "mock_repo"
+    routine_id = "git.repair.remote-head"
+
+    # Generate token
+    _, token = run_wgx_routine_preview(repo_key, repo_path, routine_id)
+
+    # Try to use token with wrong repo
+    with pytest.raises(HTTPException) as excinfo:
+        run_wgx_routine_apply("wrong_repo", repo_path, routine_id, token)
+
+    assert excinfo.value.status_code == 403
+
+    # Try to use token with wrong routine
+    with pytest.raises(HTTPException) as excinfo:
+        run_wgx_routine_apply(repo_key, repo_path, "wrong.routine", token)
+
+    assert excinfo.value.status_code == 403
 
 def test_run_wgx_routine_flow(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
