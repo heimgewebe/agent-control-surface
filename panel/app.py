@@ -492,8 +492,6 @@ def get_git_state(path: Path) -> tuple[str | None, str | None]:
 
         if head == "(initial)":
             head = None
-            if not branch:
-                branch = "HEAD"
 
         return branch or None, head or None
     except Exception:
