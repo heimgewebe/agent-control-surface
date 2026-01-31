@@ -1336,7 +1336,9 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
         )
 
     record_job_result(job_id, result)
-    set_job_status(job_id, "done" if result.ok else "error")
+    # The job itself finished successfully (audit ran and produced a result),
+    # even if the audit found issues (status=error).
+    set_job_status(job_id, "done")
 
 
 def run_git_health_job(

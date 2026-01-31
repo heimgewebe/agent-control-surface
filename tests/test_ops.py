@@ -60,25 +60,23 @@ MOCK_RESULT_JSON = json.dumps({
 @pytest.fixture
 def mock_run_wgx(monkeypatch):
     def _run(cmd, cwd, timeout=60, **kwargs):
-        cmd_str = " ".join(cmd)
-        # Updated match pattern for new CLI args
-        if "wgx audit git --repo mock_repo --correlation-id corr-1" in cmd_str:
-            return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+        # Robust list-based matching
+        if cmd[:4] == ["wgx", "audit", "git", "--repo"] and cmd[4] == "mock_repo":
+            if "--correlation-id" in cmd and "corr-1" in cmd:
+                 return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
-        # Test case: Non-zero exit but valid JSON output for audit
-        if "wgx audit git --repo fail_repo --correlation-id corr-2" in cmd_str:
+        if cmd[:4] == ["wgx", "audit", "git", "--repo"] and cmd[4] == "fail_repo":
              return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
 
-        if "wgx routine git.repair.remote-head preview" in cmd_str:
+        if cmd[:3] == ["wgx", "routine", "git.repair.remote-head"] and cmd[3] == "preview":
             return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
-        if "wgx routine git.repair.remote-head apply" in cmd_str:
+        if cmd[:3] == ["wgx", "routine", "git.repair.remote-head"] and cmd[3] == "apply":
             return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
-        # Test case: Non-zero exit but valid JSON output (e.g. routine failure reported as structured result)
-        if "wgx routine fail.test apply" in cmd_str:
+        if cmd[:3] == ["wgx", "routine", "fail.test"] and cmd[3] == "apply":
              return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
 
-        return CmdResult(1, "", f"Unknown command: {cmd_str}", cmd)
+        return CmdResult(1, "", f"Unknown command: {cmd}", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
@@ -114,8 +112,8 @@ def test_run_wgx_audit_git_stdout_flag(monkeypatch):
     assert called_with_flag
     assert result.status == "ok"
 
-def test_token_mismatch_repo(mock_run_wgx):
-    """Test that token validation fails if repo or routine ID mismatches."""
+def test_token_mismatch_deletes_token(mock_run_wgx):
+    """Test that token validation mismatch deletes the token to prevent brute-forcing."""
     repo_path = Path("/tmp/mock_repo")
     repo_key = "mock_repo"
     routine_id = "git.repair.remote-head"
@@ -126,13 +124,11 @@ def test_token_mismatch_repo(mock_run_wgx):
     # Try to use token with wrong repo
     with pytest.raises(HTTPException) as excinfo:
         run_wgx_routine_apply("wrong_repo", repo_path, routine_id, token)
-
     assert excinfo.value.status_code == 403
 
-    # Try to use token with wrong routine
+    # Try again with CORRECT repo - should fail because token was deleted
     with pytest.raises(HTTPException) as excinfo:
-        run_wgx_routine_apply(repo_key, repo_path, "wrong.routine", token)
-
+        run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
     assert excinfo.value.status_code == 403
 
 def test_run_wgx_routine_flow(mock_run_wgx):

@@ -41,14 +41,19 @@ def validate_and_consume_token(token: str, repo: str, routine_id: str) -> bool:
         if token not in TOKEN_STORE:
             return False
         entry = TOKEN_STORE[token]
+
+        # Cleanup if expired
         if now - entry["created_at"] > TOKEN_TTL_SECONDS:
             del TOKEN_STORE[token]
             return False
 
         data = entry["data"]
+        # Mismatch -> delete token to prevent brute-forcing
         if data.get("repo") != repo or data.get("routine_id") != routine_id:
+            del TOKEN_STORE[token]
             return False
 
+        # Valid usage -> delete token (consume)
         del TOKEN_STORE[token]
         return True
 
@@ -144,15 +149,21 @@ def run_wgx_audit_git(
     # If --stdout-json is requested, we assume stdout is the JSON.
     if stdout_json:
         try:
-            # Robust parsing: try to find the JSON object if there's extra noise
-            # If strictly valid, json.loads works. If not, we might fail.
-            # We stick to json.loads(output) as the contract for --stdout-json implies pure JSON.
             audit_data = json.loads(output)
         except json.JSONDecodeError:
-             if res.code != 0:
-                 raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout is not valid JSON: {res.stderr or output[:200]}")
-             # If exit code 0 but invalid JSON, it's a protocol violation
-             raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
+            # Robust parsing fallback: find first { and last }
+            start = output.find("{")
+            end = output.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    audit_data = json.loads(output[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+
+            if audit_data is None:
+                if res.code != 0:
+                    raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout is not valid JSON: {res.stderr or output[:200]}")
+                raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
     else:
         # File artifact mode
         json_path = Path(output) if output.endswith(".json") else None
@@ -208,6 +219,7 @@ def run_wgx_audit_git(
 def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
     """
     Scans .wgx/out/ for the most recent audit.git.v1.*.json artifact.
+    Prioritizes specific correlation-id files over the generic copy if both exist.
     """
     out_dir = repo_path / ".wgx" / "out"
     if not out_dir.exists():
@@ -221,7 +233,29 @@ def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
     # Sort by modification time descending
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
-    for cand in candidates:
+    # Prefer non-generic names (i.e. those with a correlation ID suffix)
+    # The generic name is usually 'audit.git.v1.json'
+    generic_name = "audit.git.v1.json"
+
+    # Try to find a non-generic candidate first, even if slightly older?
+    # Or just return the newest valid one.
+    # The prompt suggests: "Priorisiere correlation-spezifische Dateien vor dem 'latest pointer'"
+    # So we split candidates.
+
+    specific = [c for c in candidates if c.name != generic_name]
+    generic = [c for c in candidates if c.name == generic_name]
+
+    # Check specifics first (already sorted by time)
+    for cand in specific:
+        try:
+            with open(cand, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return AuditGit.model_validate(data)
+        except Exception:
+            continue
+
+    # Then generic
+    for cand in generic:
         try:
             with open(cand, "r", encoding="utf-8") as f:
                 data = json.load(f)
