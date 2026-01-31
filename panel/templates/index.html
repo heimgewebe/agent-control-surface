@@ -212,8 +212,19 @@
 
         <div id="auditRoutines" class="callout" style="display: none; margin-top: 12px;">
           <strong>Vorgeschlagene Routinen:</strong>
-          <ul id="auditRoutinesList" style="margin: 4px 0 0 16px; padding: 0;"></ul>
+          <div id="auditRoutinesList" style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;"></div>
         </div>
+      </div>
+
+      <!-- Routine Preview Modal / Overlay -->
+      <div id="routinePreviewContainer" style="display: none; border: 1px solid #ccc; padding: 16px; background: #fff; margin-top: 16px; border-radius: 6px;">
+        <h3>Routine Preview: <span id="previewRoutineId"></span></h3>
+        <pre id="previewJson" style="max-height: 300px; overflow: auto;"></pre>
+        <div class="row">
+          <button onclick="confirmApplyRoutine()" class="status error">Confirm & Apply</button>
+          <button onclick="cancelPreview()">Cancel</button>
+        </div>
+        <div id="routineApplyStatus" class="status"></div>
       </div>
     </section>
 
@@ -952,13 +963,112 @@
         if (routines.length > 0) {
           routinesContainer.style.display = "block";
           routines.forEach((r) => {
-            const li = document.createElement("li");
-            li.textContent = `${r.id} (${r.risk}): ${r.reason}`;
-            routinesList.appendChild(li);
+            const card = document.createElement("div");
+            card.style.border = "1px solid #ddd";
+            card.style.padding = "8px";
+            card.style.borderRadius = "4px";
+            card.style.background = "#fff";
+
+            const header = document.createElement("div");
+            header.style.fontWeight = "bold";
+            header.textContent = r.id;
+
+            const meta = document.createElement("div");
+            meta.className = "small";
+            meta.style.marginBottom = "4px";
+            meta.textContent = `Risk: ${r.risk} | Mutating: ${r.mutating}`;
+
+            const reason = document.createElement("div");
+            reason.textContent = r.reason;
+
+            const btnRow = document.createElement("div");
+            btnRow.style.marginTop = "8px";
+            const btn = document.createElement("button");
+            btn.textContent = "Preview";
+            btn.onclick = () => previewRoutine(r.id);
+            btnRow.appendChild(btn);
+
+            card.append(header, meta, reason, btnRow);
+            routinesList.appendChild(card);
           });
         } else {
           routinesContainer.style.display = "none";
         }
+      }
+
+      let currentRoutineId = null;
+      let currentConfirmToken = null;
+
+      async function previewRoutine(routineId) {
+        const repoValue = ensureRepo();
+        if (!repoValue) return;
+
+        currentRoutineId = routineId;
+        currentConfirmToken = null;
+        document.getElementById("routinePreviewContainer").style.display = "block";
+        document.getElementById("previewRoutineId").textContent = routineId;
+        document.getElementById("previewJson").textContent = "Loading preview...";
+        document.getElementById("routineApplyStatus").textContent = "";
+
+        try {
+          const res = await fetch("/api/routine/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repo: repoValue, id: routineId }),
+          });
+          if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(formatErrorMessage(txt));
+          }
+          const data = await res.json();
+          document.getElementById("previewJson").textContent = JSON.stringify(data.preview, null, 2);
+          currentConfirmToken = data.confirm_token;
+        } catch (e) {
+          document.getElementById("previewJson").textContent = `Error: ${e.message}`;
+        }
+      }
+
+      async function confirmApplyRoutine() {
+        if (!currentConfirmToken || !currentRoutineId) return;
+        const repoValue = ensureRepo();
+
+        document.getElementById("routineApplyStatus").textContent = "Applying...";
+
+        try {
+          const res = await fetch("/api/routine/apply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repo: repoValue,
+              id: currentRoutineId,
+              confirm_token: currentConfirmToken
+            }),
+          });
+
+          if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(formatErrorMessage(txt));
+          }
+
+          const result = await res.json();
+          document.getElementById("routineApplyStatus").textContent = "Success! Re-auditing...";
+
+          // Show result briefly or just reload audit
+          setTimeout(() => {
+             cancelPreview();
+             auditGit(); // Re-audit
+          }, 1500);
+
+        } catch (e) {
+          document.getElementById("routineApplyStatus").textContent = `Error: ${e.message}`;
+          document.getElementById("routineApplyStatus").className = "status error";
+        }
+      }
+
+      function cancelPreview() {
+        document.getElementById("routinePreviewContainer").style.display = "none";
+        currentRoutineId = null;
+        currentConfirmToken = null;
       }
 
       function setAuditStatus(text, state) {

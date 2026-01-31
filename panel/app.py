@@ -21,7 +21,12 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
-from .ops import AuditGit, run_git_audit
+from .ops import (
+    AuditGit,
+    run_wgx_audit_git,
+    run_wgx_routine_preview,
+    run_wgx_routine_apply,
+)
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
@@ -115,6 +120,15 @@ class GitRepairStageBReq(BaseModel):
     delete_base_ref: bool = False
 
 
+class RoutinePreviewReq(BaseModel):
+    repo: str
+    id: str
+
+
+class RoutineApplyReq(BaseModel):
+    repo: str
+    id: str
+    confirm_token: str
 
 
 class PublishJobResponse(BaseModel):
@@ -345,6 +359,28 @@ def api_audit_git(repo: str = Query(...)) -> JSONResponse:
     JOB_EXECUTOR.submit(run_audit_job, job_id, correlation_id, repo)
     payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
     return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/routine/preview", response_class=JSONResponse)
+def api_routine_preview(req: RoutinePreviewReq) -> JSONResponse:
+    target = get_repo(req.repo)
+    try:
+        preview, token = run_wgx_routine_preview(target.key, target.path, req.id)
+        return JSONResponse({"preview": preview, "confirm_token": token})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/routine/apply", response_class=JSONResponse)
+def api_routine_apply(req: RoutineApplyReq) -> JSONResponse:
+    target = get_repo(req.repo)
+    try:
+        result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token)
+        return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/jobs/{job_id}", response_class=JSONResponse)
@@ -1226,7 +1262,7 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
         return
 
     try:
-        audit_result = run_git_audit(target.key, target.path, correlation_id)
+        audit_result = run_wgx_audit_git(target.key, target.path, correlation_id)
         # Wrap audit result in ActionResult
         result = build_action_result(
             ok=audit_result.status != "error",

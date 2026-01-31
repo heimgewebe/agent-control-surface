@@ -1,14 +1,61 @@
 from __future__ import annotations
 
-import shlex
+import json
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from .runner import run
 
+# ------------------------------------------------------------------------------
+# Token Store (In-Memory)
+# ------------------------------------------------------------------------------
+
+TOKEN_STORE: dict[str, dict[str, Any]] = {}
+TOKEN_TTL_SECONDS = 600  # 10 minutes
+TOKEN_LOCK = threading.Lock()
+
+
+def create_token(data: dict[str, Any]) -> str:
+    token = str(uuid.uuid4())
+    now = time.time()
+    with TOKEN_LOCK:
+        # Cleanup expired
+        expired = [k for k, v in TOKEN_STORE.items() if now - v["created_at"] > TOKEN_TTL_SECONDS]
+        for k in expired:
+            del TOKEN_STORE[k]
+
+        TOKEN_STORE[token] = {"created_at": now, "data": data}
+    return token
+
+
+def validate_and_consume_token(token: str, repo: str, routine_id: str) -> bool:
+    now = time.time()
+    with TOKEN_LOCK:
+        if token not in TOKEN_STORE:
+            return False
+        entry = TOKEN_STORE[token]
+        if now - entry["created_at"] > TOKEN_TTL_SECONDS:
+            del TOKEN_STORE[token]
+            return False
+
+        data = entry["data"]
+        if data.get("repo") != repo or data.get("routine_id") != routine_id:
+            return False
+
+        del TOKEN_STORE[token]
+        return True
+
+
+# ------------------------------------------------------------------------------
+# Models
+# ------------------------------------------------------------------------------
 
 class AuditFacts(BaseModel):
     head_sha: str | None
@@ -63,190 +110,165 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_git_audit(repo_key: str, repo_path: Path, correlation_id: str) -> AuditGit:
-    cwd = str(repo_path)
+# ------------------------------------------------------------------------------
+# Operations (WGX Wrappers)
+# ------------------------------------------------------------------------------
 
-    # 1. Facts Gathering
+def run_wgx_audit_git(repo_key: str, repo_path: Path, correlation_id: str) -> AuditGit:
+    """
+    Executes `wgx audit git --json` via the runner.
+    Parses the output (JSON) and returns a validated AuditGit object.
+    """
+    # Assumption: `wgx` is in PATH or we use a relative path if it's in the repo.
+    # The prompt implies `wgx` is the tool to use.
+    cmd = ["wgx", "audit", "git", "--json"]
 
-    # HEAD info
-    head_sha_res = run(["git", "rev-parse", "HEAD"], cwd=repo_path)
-    head_sha = head_sha_res.stdout.strip() if head_sha_res.code == 0 else None
+    # We might need to ensure the environment has what wgx needs.
+    # Runner handles CWD.
 
-    head_ref_res = run(["git", "symbolic-ref", "-q", "HEAD"], cwd=repo_path)
-    head_ref = head_ref_res.stdout.strip() if head_ref_res.code == 0 else None
-    is_detached_head = head_ref_res.code != 0
+    res = run(cmd, cwd=repo_path, timeout=60)
 
-    local_branch = None
-    if not is_detached_head and head_ref and head_ref.startswith("refs/heads/"):
-        local_branch = head_ref[11:]
+    if res.code != 0:
+        # If wgx fails, we try to parse stdout/stderr to see if it emitted a JSON error
+        # But mostly we'll just raise or return a synthetic error.
+        raise RuntimeError(f"WGX audit failed (code {res.code}): {res.stderr or res.stdout}")
 
-    # Remotes
-    remotes_res = run(["git", "remote"], cwd=repo_path)
-    remotes = [r for r in remotes_res.stdout.splitlines() if r.strip()]
-    origin_present = "origin" in remotes
+    output = res.stdout.strip()
 
-    # Fetch (non-blocking for audit, but we try)
-    fetch_ok = False
-    if origin_present:
-        fetch_res = run(["git", "fetch", "origin", "--prune"], cwd=repo_path, timeout=30)
-        fetch_ok = fetch_res.code == 0
+    # WGX might return the path to the JSON file, or the JSON itself.
+    # The blueprint says: "|--> audit.git.json" and "writes artifact".
+    # It also says: "run(['wgx','audit','git','--json', ...]) ... liest den zurückgegebenen Pfad (stdout) oder .wgx/out/audit.git.v1.json"
 
-    # Remote Refs
-    origin_head_res = run(["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/HEAD"], cwd=repo_path)
-    origin_head_exists = origin_head_res.code == 0
+    json_path = Path(output) if output.endswith(".json") else None
 
-    origin_main_res = run(["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"], cwd=repo_path)
-    origin_main_exists = origin_main_res.code == 0
+    audit_data = None
 
-    remote_default_branch = None
-    if origin_head_exists:
-        # Resolves refs/remotes/origin/HEAD -> refs/remotes/origin/main
-        sym_res = run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=repo_path)
-        if sym_res.code == 0:
-            remote_default_branch = sym_res.stdout.strip().replace("refs/remotes/", "")
-
-    # Upstream
-    upstream_info = None
-    upstream_exists = False
-    ahead = 0
-    behind = 0
-
-    if local_branch:
-        upstream_res = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=repo_path)
-        if upstream_res.code == 0:
-            upstream_name = upstream_res.stdout.strip()
-            upstream_exists = True
-            upstream_info = {"name": upstream_name, "exists_locally": True}
-
-            # Ahead/Behind
-            ab_res = run(["git", "rev-list", "--left-right", "--count", f"{upstream_name}...HEAD"], cwd=repo_path)
-            if ab_res.code == 0:
-                parts = ab_res.stdout.split()
-                if len(parts) >= 2:
-                    behind, ahead = int(parts[0]), int(parts[1])
-
-    # Working Tree
-    # Staged
-    staged_res = run(["git", "diff", "--cached", "--name-only"], cwd=repo_path)
-    staged_count = len([l for l in staged_res.stdout.splitlines() if l.strip()])
-
-    # Unstaged
-    unstaged_res = run(["git", "diff", "--name-only"], cwd=repo_path)
-    unstaged_count = len([l for l in unstaged_res.stdout.splitlines() if l.strip()])
-
-    # Untracked
-    untracked_res = run(["git", "ls-files", "--others", "--exclude-standard"], cwd=repo_path)
-    untracked_count = len([l for l in untracked_res.stdout.splitlines() if l.strip()])
-
-    is_clean = (staged_count == 0 and unstaged_count == 0 and untracked_count == 0)
-
-    # 2. Checks & Logic
-
-    checks = []
-    routines = []
-
-    # Check: Repo Present (Implicitly true if we are running here, but good to record)
-    checks.append(AuditCheck(id="git.repo.present", status="ok", message="Repo is present."))
-
-    # Check: Origin Present
-    if origin_present:
-        checks.append(AuditCheck(id="git.remote.origin.present", status="ok", message="Remote 'origin' is configured."))
+    if json_path and (repo_path / json_path).exists():
+        # It's a relative path in the repo
+        try:
+            with open(repo_path / json_path, "r", encoding="utf-8") as f:
+                audit_data = json.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read audit artifact at {json_path}: {e}")
+    elif json_path and Path(output).exists():
+         # Absolute path? Unlikely but possible
+        try:
+            with open(Path(output), "r", encoding="utf-8") as f:
+                audit_data = json.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read audit artifact at {output}: {e}")
     else:
-        checks.append(AuditCheck(id="git.remote.origin.present", status="error", message="Remote 'origin' is missing."))
+        # Maybe stdout IS the JSON?
+        try:
+            audit_data = json.loads(output)
+        except json.JSONDecodeError:
+            # Fallback: check default location .wgx/out/audit.git.v1.json
+            default_path = repo_path / ".wgx/out/audit.git.v1.json"
+            if default_path.exists():
+                try:
+                    with open(default_path, "r", encoding="utf-8") as f:
+                        audit_data = json.load(f)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to read default audit artifact: {e}")
+            else:
+                raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
 
-    # Check: Fetch
-    if origin_present:
-        if fetch_ok:
-             checks.append(AuditCheck(id="git.fetch.ok", status="ok", message="Fetched remote refs successfully."))
-        else:
-             checks.append(AuditCheck(id="git.fetch.ok", status="warn", message="git fetch failed. Remote state may be stale."))
+    # Validate with Pydantic
+    try:
+        # Override correlation_id with ours if needed, or trust theirs?
+        # The contract says we pass correlation_id potentially? WGX might generate its own.
+        # Let's ensure repo matches.
+        audit = AuditGit.model_validate(audit_data)
+        # We can update correlation_id to match the job one if we want consistency,
+        # but let's respect what WGX produced if it did.
+        if not audit.correlation_id:
+             audit.correlation_id = correlation_id
+        return audit
+    except Exception as e:
+        raise RuntimeError(f"Audit artifact validation failed: {e}")
 
-    # Check: Origin HEAD
-    if origin_head_exists:
-        checks.append(AuditCheck(id="git.remote_head.discoverable", status="ok", message=f"origin/HEAD is present ({remote_default_branch or 'unknown'})."))
+
+def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> tuple[dict[str, Any], str]:
+    """
+    Runs `wgx routine <id> preview` (or similar).
+    Returns (preview_json, confirm_token).
+    """
+    # CLI syntax assumed: wgx routine <id> preview
+    cmd = ["wgx", "routine", routine_id, "preview"]
+
+    res = run(cmd, cwd=repo_path, timeout=60)
+
+    if res.code != 0:
+        raise RuntimeError(f"Routine preview failed: {res.stderr or res.stdout}")
+
+    output = res.stdout.strip()
+    # Logic similar to audit: read file or json
+    json_path = Path(output) if output.endswith(".json") else None
+    preview_data = None
+
+    if json_path and (repo_path / json_path).exists():
+        with open(repo_path / json_path, "r", encoding="utf-8") as f:
+            preview_data = json.load(f)
+    elif json_path and Path(output).exists():
+        with open(Path(output), "r", encoding="utf-8") as f:
+            preview_data = json.load(f)
     else:
-        checks.append(AuditCheck(id="git.remote_head.discoverable", status="error", message="origin/HEAD is missing or dangling."))
-        routines.append(SuggestedRoutine(
-            id="git.repair.remote-head",
-            risk="low",
-            mutating=True,
-            dry_run_supported=True,
-            reason="origin/HEAD missing/dangling; restore remote head + refs.",
-            requires=["git"]
-        ))
+        try:
+            preview_data = json.loads(output)
+        except json.JSONDecodeError:
+             # Fallback default path?
+            default_path = repo_path / ".wgx/out/routine.preview.json"
+            if default_path.exists():
+                with open(default_path, "r", encoding="utf-8") as f:
+                    preview_data = json.load(f)
+            else:
+                raise RuntimeError("Could not parse routine preview output.")
 
-    # Check: Origin Main (Reference check)
-    if origin_main_exists:
-        checks.append(AuditCheck(id="git.origin_main.present", status="ok", message="refs/remotes/origin/main exists."))
+    # Create Token
+    token = create_token({"repo": repo_key, "routine_id": routine_id})
+
+    return preview_data, token
+
+
+def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str) -> dict[str, Any]:
+    """
+    Validates token, runs `wgx routine <id> apply`.
+    Returns result json.
+    """
+    if not validate_and_consume_token(token, repo_key, routine_id):
+        raise HTTPException(status_code=403, detail="Invalid or expired confirmation token.")
+
+    cmd = ["wgx", "routine", routine_id, "apply"]
+
+    res = run(cmd, cwd=repo_path, timeout=300) # Apply might take longer
+
+    if res.code != 0:
+        # Even if failed, we try to get the result artifact if it exists
+        pass
+
+    output = res.stdout.strip()
+    json_path = Path(output) if output.endswith(".json") else None
+    result_data = None
+
+    if json_path and (repo_path / json_path).exists():
+        with open(repo_path / json_path, "r", encoding="utf-8") as f:
+            result_data = json.load(f)
+    elif json_path and Path(output).exists():
+        with open(Path(output), "r", encoding="utf-8") as f:
+            result_data = json.load(f)
     else:
-        checks.append(AuditCheck(id="git.origin_main.present", status="warn", message="refs/remotes/origin/main missing."))
-        # Only suggest repair if we haven't already
-        if not any(r.id == "git.repair.remote-head" for r in routines):
-             routines.append(SuggestedRoutine(
-                id="git.repair.remote-head",
-                risk="low",
-                mutating=True,
-                dry_run_supported=True,
-                reason="origin/main missing; likely remote head/ref tracking broken locally.",
-                requires=["git"]
-            ))
+        try:
+            result_data = json.loads(output)
+        except json.JSONDecodeError:
+            default_path = repo_path / ".wgx/out/routine.result.json"
+            if default_path.exists():
+                with open(default_path, "r", encoding="utf-8") as f:
+                    result_data = json.load(f)
+            else:
+                # If everything fails, return raw output wrapper
+                if res.code != 0:
+                     raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr}")
+                else:
+                     raise RuntimeError(f"Routine apply succeeded (exit 0) but no JSON output found: {output}")
 
-    # Overall Status
-    overall_status: Literal["ok", "warn", "error"] = "ok"
-    if any(c.status == "error" for c in checks):
-        overall_status = "error"
-    elif any(c.status == "warn" for c in checks):
-        overall_status = "warn"
-
-    # Uncertainty
-    # If fetch failed or origin missing, uncertainty is high
-    u_level = 0.1
-    u_meta: Literal["productive", "avoidable", "systemic"] = "productive"
-    u_causes = []
-
-    if not origin_present or not fetch_ok:
-        u_level = 0.35
-        u_meta = "systemic"
-        u_causes.append({"kind": "environment_variance", "note": "Remote or network/tooling state prevents reliable ref discovery."})
-    else:
-        u_causes.append({"kind": "remote_ref_inconsistency", "note": "Remote tracking refs may be incomplete or pruned unexpectedly."})
-
-    # Construct Artifact
-    return AuditGit(
-        ts=now_iso(),
-        repo=repo_key,
-        cwd=cwd,
-        status=overall_status,
-        facts=AuditFacts(
-            head_sha=head_sha,
-            head_ref=head_ref,
-            is_detached_head=is_detached_head,
-            local_branch=local_branch,
-            upstream=upstream_info,
-            remotes=remotes,
-            remote_default_branch=remote_default_branch,
-            remote_refs={
-                "origin_main": origin_main_exists,
-                "origin_head": origin_head_exists,
-                "origin_upstream": upstream_exists # approximation
-            },
-            working_tree={
-                "is_clean": is_clean,
-                "staged": staged_count,
-                "unstaged": unstaged_count,
-                "untracked": untracked_count
-            },
-            ahead_behind={
-                "ahead": ahead,
-                "behind": behind
-            }
-        ),
-        checks=checks,
-        uncertainty=Uncertainty(
-            level=u_level,
-            causes=u_causes,
-            meta=u_meta
-        ),
-        suggested_routines=routines,
-        correlation_id=correlation_id
-    )
+    return result_data

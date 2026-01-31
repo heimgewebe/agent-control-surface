@@ -1,71 +1,123 @@
+import json
 import pytest
 from pathlib import Path
-from panel.ops import run_git_audit, AuditGit
+from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit
 from panel.runner import CmdResult
+from fastapi import HTTPException
 
-# Mock data
-MOCK_HEAD_SHA = "abcdef123456"
-MOCK_HEAD_REF = "refs/heads/feature-branch"
-MOCK_REMOTES = "origin\nupstream"
-MOCK_ORIGIN_HEAD = "refs/remotes/origin/main"
-MOCK_UPSTREAM = "origin/main"
+# Mock JSON responses matching WGX output
+MOCK_AUDIT_JSON = json.dumps({
+    "kind": "audit.git",
+    "schema_version": "v1",
+    "ts": "2023-10-27T10:00:00Z",
+    "repo": "mock_repo",
+    "cwd": "/tmp/mock_repo",
+    "status": "ok",
+    "facts": {
+        "head_sha": "abcdef123456",
+        "head_ref": "refs/heads/feature",
+        "is_detached_head": False,
+        "local_branch": "feature",
+        "upstream": {"name": "origin/main", "exists_locally": True},
+        "remotes": ["origin"],
+        "remote_default_branch": "main",
+        "remote_refs": {"origin_main": True, "origin_head": True, "origin_upstream": True},
+        "working_tree": {"is_clean": True, "staged": 0, "unstaged": 0, "untracked": 0},
+        "ahead_behind": {"ahead": 0, "behind": 0}
+    },
+    "checks": [
+        {"id": "git.repo.present", "status": "ok", "message": "Repo present"}
+    ],
+    "uncertainty": {
+        "level": 0.0,
+        "causes": [],
+        "meta": "productive"
+    },
+    "suggested_routines": [],
+    "correlation_id": "test-correlation-id"
+})
+
+MOCK_PREVIEW_JSON = json.dumps({
+    "kind": "routine.preview",
+    "id": "git.repair.remote-head",
+    "mode": "dry-run",
+    "mutating": True,
+    "risk": "low",
+    "steps": [{"cmd": "git remote set-head origin --auto", "why": "Restore origin/HEAD"}],
+    "expected_effect": "origin/HEAD restored"
+})
+
+MOCK_RESULT_JSON = json.dumps({
+    "kind": "routine.result",
+    "id": "git.repair.remote-head",
+    "mode": "apply",
+    "mutating": True,
+    "ok": True,
+    "state_hash": {"before": "aaa", "after": "bbb"},
+    "stdout": "Fixed."
+})
 
 @pytest.fixture
-def mock_run(monkeypatch):
+def mock_run_wgx(monkeypatch):
     def _run(cmd, cwd, timeout=60, **kwargs):
         cmd_str = " ".join(cmd)
-        if "rev-parse HEAD" in cmd_str:
-            return CmdResult(0, MOCK_HEAD_SHA, "", cmd)
-        if "symbolic-ref -q HEAD" in cmd_str:
-            return CmdResult(0, MOCK_HEAD_REF, "", cmd)
-        if "remote" in cmd_str and "get-url" not in cmd_str:
-            return CmdResult(0, MOCK_REMOTES, "", cmd)
-        if "fetch" in cmd_str:
-            return CmdResult(0, "", "", cmd)
-        if "show-ref --verify --quiet refs/remotes/origin/HEAD" in cmd_str:
-            return CmdResult(0, "", "", cmd)
-        if "show-ref --verify --quiet refs/remotes/origin/main" in cmd_str:
-            return CmdResult(0, "", "", cmd)
-        if "symbolic-ref refs/remotes/origin/HEAD" in cmd_str:
-            return CmdResult(0, MOCK_ORIGIN_HEAD, "", cmd)
-        if "rev-parse --abbrev-ref --symbolic-full-name @{u}" in cmd_str:
-            return CmdResult(0, MOCK_UPSTREAM, "", cmd)
-        if "rev-list --left-right --count" in cmd_str:
-            return CmdResult(0, "1 2", "", cmd) # 1 behind, 2 ahead
-        if "diff --cached --name-only" in cmd_str:
-            return CmdResult(0, "", "", cmd)
-        if "diff --name-only" in cmd_str:
-            return CmdResult(0, "", "", cmd)
-        if "ls-files --others" in cmd_str:
-            return CmdResult(0, "", "", cmd)
+        if "wgx audit git --json" in cmd_str:
+            return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+        if "wgx routine git.repair.remote-head preview" in cmd_str:
+            return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
+        if "wgx routine git.repair.remote-head apply" in cmd_str:
+            return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
-        return CmdResult(1, "", "unknown command", cmd)
+        return CmdResult(1, "", f"Unknown command: {cmd_str}", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-def test_run_git_audit_structure(mock_run):
+def test_run_wgx_audit_git(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
-    result = run_git_audit("mock_repo", repo_path, "correlation-123")
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1")
 
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
-    assert result.facts.head_sha == MOCK_HEAD_SHA
-    assert result.facts.local_branch == "feature-branch"
-    assert result.facts.upstream["name"] == MOCK_UPSTREAM
-    assert result.facts.ahead_behind["ahead"] == 2
-    assert result.facts.ahead_behind["behind"] == 1
     assert result.status == "ok"
-    assert result.facts.remote_refs["origin_head"] is True
+    assert result.correlation_id == "test-correlation-id" # Taken from JSON
 
-def test_run_git_audit_missing_origin(monkeypatch):
-    def _run(cmd, cwd, timeout=60, **kwargs):
-        # Default fail for everything to simulate empty/broken repo or missing remote
-        return CmdResult(1, "", "error", cmd)
-    monkeypatch.setattr("panel.ops.run", _run)
-
+def test_run_wgx_routine_flow(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
-    result = run_git_audit("mock_repo", repo_path, "correlation-123")
+    repo_key = "mock_repo"
+    routine_id = "git.repair.remote-head"
 
-    assert result.status == "error"
-    # Should check if remote origin check failed
-    assert any(c.id == "git.remote.origin.present" and c.status == "error" for c in result.checks)
+    # 1. Preview
+    preview, token = run_wgx_routine_preview(repo_key, repo_path, routine_id)
+    assert preview["kind"] == "routine.preview"
+    assert token is not None
+
+    # 2. Apply with valid token
+    result = run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
+    assert result["kind"] == "routine.result"
+    assert result["ok"] is True
+
+def test_run_wgx_routine_apply_invalid_token(mock_run_wgx):
+    repo_path = Path("/tmp/mock_repo")
+    repo_key = "mock_repo"
+    routine_id = "git.repair.remote-head"
+
+    with pytest.raises(HTTPException) as excinfo:
+        run_wgx_routine_apply(repo_key, repo_path, routine_id, "invalid-token")
+
+    assert excinfo.value.status_code == 403
+
+def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
+    repo_path = Path("/tmp/mock_repo")
+    repo_key = "mock_repo"
+    routine_id = "git.repair.remote-head"
+
+    preview, token = run_wgx_routine_preview(repo_key, repo_path, routine_id)
+
+    # Use once -> OK
+    run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
+
+    # Use again -> Fail
+    with pytest.raises(HTTPException) as excinfo:
+        run_wgx_routine_apply(repo_key, repo_path, routine_id, token)
+
+    assert excinfo.value.status_code == 403
