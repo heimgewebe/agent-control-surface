@@ -106,3 +106,25 @@ Siehe `docs/publish.md` für curl-Beispiele.
 ## Hinweise zur Jules-Diff-CLI
 
 Der Diff-Endpoint nutzt aktuell `jules remote pull --session <id>`. Falls Jules hier einen anderen Subcommand verlangt, wird nur diese Zeile ersetzt.
+
+## Ops / Git Health (Audit & Routinen)
+
+Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um Git-Probleme (dangling refs, detached head, missing upstream) zu diagnostizieren und zu reparieren.
+
+### Konfiguration
+
+- **`ACS_CORS_ALLOW_ORIGINS`** (Env): Komma-getrennte Liste erlaubter Origins für CORS.
+  - Default: leer (kein CORS).
+  - Beispiel für Leitstand + Local Dev: `http://localhost:5173,http://127.0.0.1:5173`
+- **`ACS_ENABLE_ROUTINES`** (Env): Aktiviert mutierende Ops-Endpunkte.
+  - Default: `false`.
+  - Setzen auf `true` aktiviert `/api/routine/preview` und `/api/routine/apply`.
+  - **Sicherheitshinweis:** Nur aktivieren, wenn ACS in einem gesicherten Netz läuft oder hinter einem Auth-Proxy steht. Routinen führen Shell-Kommandos im Kontext des Users aus.
+
+### Endpunkte
+
+- `GET /api/audit/git/sync`: Führt `wgx audit git` synchron aus und liefert das Ergebnis (bevorzugt für Viewer).
+- `GET /api/audit/git/latest`: Liefert das letzte gespeicherte Audit-Artefakt.
+- `POST /api/audit/git`: Startet Audit als Background-Job.
+- `POST /api/routine/preview`: Startet Dry-Run für eine Routine (liefert `confirm_token`).
+- `POST /api/routine/apply`: Führt Routine aus (benötigt `confirm_token`).

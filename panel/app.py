@@ -397,14 +397,27 @@ def api_audit_git_sync(repo: str = Query(...)) -> JSONResponse:
     try:
         result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=True)
         return JSONResponse(result.model_dump())
-    except Exception:
+    except Exception as e1:
+        # Log first failure for diagnostics
+        log_action({
+            "action": "audit.git.sync.stdout_json_failed",
+            "repo": target.key,
+            "correlation_id": correlation_id,
+            "error": str(e1)
+        })
         # Fallback to file mode if stdout parsing/flag fails
         try:
             result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=False)
             return JSONResponse(result.model_dump())
-        except Exception as e:
-            # If both fail, return error
-            raise HTTPException(status_code=500, detail=f"Audit failed (correlation_id={correlation_id}): {str(e)}")
+        except Exception as e2:
+            # If both fail, log second failure and return error
+            log_action({
+                "action": "audit.git.sync.file_mode_failed",
+                "repo": target.key,
+                "correlation_id": correlation_id,
+                "error": str(e2)
+            })
+            raise HTTPException(status_code=500, detail=f"Audit failed (correlation_id={correlation_id}): {str(e2)}")
 
 
 @app.get("/api/audit/git/latest", response_class=JSONResponse)
