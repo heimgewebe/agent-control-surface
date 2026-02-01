@@ -42,8 +42,11 @@ _origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "")
 cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
 # Browsers reject allow_credentials=True with allow_origins=["*"]
+# Also, no credentials should be allowed if CORS is effectively disabled (empty origins).
 allow_creds = True
-if "*" in cors_origins:
+if not cors_origins:
+    allow_creds = False
+elif "*" in cors_origins:
     # Warning: Wildcard origin with credentials is not allowed by browsers.
     # Disabling credentials for safety.
     log_action({"warning": "CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests."})

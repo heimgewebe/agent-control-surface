@@ -98,7 +98,8 @@ def test_run_wgx_audit_git(mock_run_wgx):
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
     assert result.status == "ok"
-    # assert result.correlation_id == "test-correlation-id" # Taken from JSON
+    # Correlation ID must be overridden by the caller's ID to ensure tracking consistency
+    assert result.correlation_id == "corr-1"
 
 def test_run_wgx_audit_git_nonzero_exit_with_json(mock_run_wgx):
     repo_path = Path("/tmp/fail_repo")
@@ -214,7 +215,10 @@ def test_get_latest_audit_artifact(tmp_path):
 
     # New file
     new = out_dir / "audit.git.v1.new.json"
-    new.write_text(MOCK_AUDIT_JSON.replace("ok", "warn"))
+    # Robustly modify JSON instead of string replace
+    data = json.loads(MOCK_AUDIT_JSON)
+    data["status"] = "warn"
+    new.write_text(json.dumps(data))
 
     result = get_latest_audit_artifact(tmp_path)
     assert result is not None
