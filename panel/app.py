@@ -45,15 +45,17 @@ cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 if cors_origins:
     # Browsers reject allow_credentials=True with allow_origins=["*"]
     allow_creds = True
+    final_origins = cors_origins
+
     if "*" in cors_origins:
-        # Warning: Wildcard origin with credentials is not allowed by browsers.
-        # Disabling credentials for safety.
-        log_action({"warning": "CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests."})
+        # Wildcard origin with credentials is not allowed by browsers.
+        # Force strict wildcard behavior: no credentials, explicit "*" origin.
         allow_creds = False
+        final_origins = ["*"]
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=cors_origins,
+        allow_origins=final_origins,
         allow_credentials=allow_creds,
         allow_methods=["*"],
         allow_headers=["*"],

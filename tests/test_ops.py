@@ -305,19 +305,22 @@ def test_run_wgx_routine_stdout_fallback_file_path(tmp_path, monkeypatch):
 
 # API & Sync Fallback Tests
 
-def test_api_audit_git_sync_fallback(monkeypatch, tmp_path):
+@pytest.fixture
+def mock_get_repo(monkeypatch, tmp_path):
+    """Patches get_repo to always return a Repo pointing to tmp_path for CI stability."""
+    from panel.repos import Repo
+    def _get_repo(key):
+        return Repo(key=key, path=tmp_path, display=f"mock/{key}")
+
+    monkeypatch.setattr("panel.app.get_repo", _get_repo)
+    return tmp_path
+
+def test_api_audit_git_sync_fallback(monkeypatch, mock_get_repo):
     """Test that sync audit endpoint falls back to file mode if stdout fails."""
     client = TestClient(app)
 
-    # We need to mock get_repo to return our tmp_path
-    from panel.repos import Repo
-    def mock_get_repo(key):
-        return Repo(key="metarepo", path=tmp_path, display="mock/repo")
-
-    monkeypatch.setattr("panel.app.get_repo", mock_get_repo)
-
     # Setup artifact file for fallback
-    out_dir = tmp_path / ".wgx" / "out"
+    out_dir = mock_get_repo / ".wgx" / "out"
     out_dir.mkdir(parents=True)
     artifact_path = out_dir / "audit.git.v1.json"
     artifact_path.write_text(MOCK_AUDIT_JSON)
@@ -343,7 +346,7 @@ def test_api_audit_git_sync_fallback(monkeypatch, tmp_path):
     assert response.json()["status"] == "ok"
     assert call_count == 2 # Should have tried twice
 
-def test_routines_safety_gate(monkeypatch):
+def test_routines_safety_gate(monkeypatch, mock_get_repo):
     """Test that routine endpoints are disabled by default."""
     client = TestClient(app)
 
@@ -357,7 +360,7 @@ def test_routines_safety_gate(monkeypatch):
     res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x"})
     assert res.status_code == 403
 
-def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx):
+def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled."""
     client = TestClient(app)
 
@@ -368,13 +371,13 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx):
     assert res.status_code == 200
     assert "confirm_token" in res.json()
 
-def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx):
+def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that api_routine_apply returns 409 if the routine reports ok=False."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
 
     # We need a valid token first
-    _, token, p_hash = run_wgx_routine_preview("metarepo", Path("/tmp/mock_repo"), "git.repair.remote-head")
+    _, token, p_hash = run_wgx_routine_preview("metarepo", mock_get_repo, "git.repair.remote-head")
 
     # Mock result with ok=False
     mock_fail_json = json.dumps({
@@ -400,7 +403,7 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx):
     assert res.status_code == 409
     assert res.json()["ok"] is False
 
-def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx):
+def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that X-ACS-Actor-Token is required if secret is set."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")

@@ -124,6 +124,8 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
   - Wenn gesetzt, erfordern `/api/routine/preview` und `/api/routine/apply` den Header `X-ACS-Actor-Token: <secret>`.
   - Empfohlen, wenn Routinen aktiviert sind, um CSRF oder versehentliche Aufrufe zu verhindern.
 
+> **Wichtig:** Confirm-Tokens werden aktuell **in-memory** (pro Prozess) gespeichert. Bei einem Deployment mit mehreren Workern/Pods ist ein Token ungültig, wenn Preview und Apply auf unterschiedlichen Instanzen landen.
+
 ### Endpunkte
 
 - `GET /api/audit/git/sync`: Führt `wgx audit git` synchron aus und liefert das Ergebnis (bevorzugt für Viewer).
