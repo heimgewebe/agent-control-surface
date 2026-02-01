@@ -347,3 +347,37 @@ def test_routines_safety_gate_enabled(monkeypatch, mock_run_wgx):
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
     assert res.status_code == 200
     assert "confirm_token" in res.json()
+
+def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx):
+    """Test that api_routine_apply returns 409 if the routine reports ok=False."""
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+
+    # We need a valid token first
+    _, token = run_wgx_routine_preview("metarepo", Path("/tmp/mock_repo"), "git.repair.remote-head")
+
+    # Mock result with ok=False
+    mock_fail_json = json.dumps({
+        "kind": "routine.result",
+        "id": "fail.test",
+        "mode": "apply",
+        "mutating": True,
+        "ok": False,
+        "stdout": "Oops."
+    })
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        if "fail.test" in cmd:
+            return CmdResult(0, mock_fail_json, "", cmd)
+        return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    # We cheat and register token for "fail.test" manually or just use the mock logic
+    # that ops.py uses (validate_and_consume_token checks internal store).
+    # Easier: manually inject token for the fail routine
+    real_token = create_token({"repo": "metarepo", "routine_id": "fail.test"})
+
+    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token})
+    assert res.status_code == 409
+    assert res.json()["ok"] is False

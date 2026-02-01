@@ -228,7 +228,8 @@ def run_wgx_audit_git(
         audit_data = extract_json_from_stdout(output)
         if audit_data is None:
             if res.code != 0:
-                raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout contains no valid JSON: {res.stderr or output[:200]}")
+                detail = res.stderr or output[:200]
+                raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout contains no valid JSON: {detail}")
             raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
     else:
         # File artifact mode (default)
@@ -258,7 +259,8 @@ def run_wgx_audit_git(
                         raise RuntimeError(f"Failed to read default audit artifact: {e}")
                 else:
                     if res.code != 0:
-                        raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {res.stderr or output[:200]}")
+                        detail = res.stderr or output[:200]
+                        raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {detail}")
                     raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
 
     # Validate with Pydantic
@@ -349,7 +351,8 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
                     pass
 
         if preview_data is None:
-            raise RuntimeError(f"Could not parse routine preview output: {output[:200]}")
+            detail = res.stderr or output[:200]
+            raise RuntimeError(f"Could not parse routine preview output: {detail}")
 
     token = create_token({"repo": repo_key, "routine_id": routine_id})
     return preview_data, token

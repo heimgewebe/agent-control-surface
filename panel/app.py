@@ -41,24 +41,23 @@ app = FastAPI(title="agent-control-surface")
 _origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "")
 cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
-# Browsers reject allow_credentials=True with allow_origins=["*"]
-# Also, no credentials should be allowed if CORS is effectively disabled (empty origins).
-allow_creds = True
-if not cors_origins:
-    allow_creds = False
-elif "*" in cors_origins:
-    # Warning: Wildcard origin with credentials is not allowed by browsers.
-    # Disabling credentials for safety.
-    log_action({"warning": "CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests."})
-    allow_creds = False
+# Configure CORS only if origins are provided
+if cors_origins:
+    # Browsers reject allow_credentials=True with allow_origins=["*"]
+    allow_creds = True
+    if "*" in cors_origins:
+        # Warning: Wildcard origin with credentials is not allowed by browsers.
+        # Disabling credentials for safety.
+        log_action({"warning": "CORS configured with wildcard origin '*'. Credentials (cookies) will be disabled for cross-origin requests."})
+        allow_creds = False
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=allow_creds,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=allow_creds,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -459,6 +458,9 @@ def api_routine_apply(req: RoutineApplyReq) -> JSONResponse:
     target = get_repo(req.repo)
     try:
         result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token)
+        # If routine reports failure (ok=False), return 409 Conflict so clients handle it semantically
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=409)
         return JSONResponse(result)
     except HTTPException:
         raise
