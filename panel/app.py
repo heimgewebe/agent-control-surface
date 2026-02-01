@@ -392,12 +392,19 @@ def api_audit_git_sync(repo: str = Query(...)) -> JSONResponse:
     """Synchronous audit endpoint for viewers like Leitstand."""
     target = get_repo(repo)
     correlation_id = new_correlation_id()
+
+    # Try stdout_json=True first (fast, viewer-friendly)
     try:
-        # Use stdout_json=True to get result directly without relying on file artifact coordination
         result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=True)
         return JSONResponse(result.model_dump())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Fallback to file mode if stdout parsing/flag fails
+        try:
+            result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=False)
+            return JSONResponse(result.model_dump())
+        except Exception as e:
+            # If both fail, return error
+            raise HTTPException(status_code=500, detail=f"Audit failed (correlation_id={correlation_id}): {str(e)}")
 
 
 @app.get("/api/audit/git/latest", response_class=JSONResponse)
@@ -410,8 +417,18 @@ def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
     return JSONResponse(result.model_dump())
 
 
+def check_routines_enabled() -> None:
+    enabled = os.getenv("ACS_ENABLE_ROUTINES", "false").lower() in ("true", "1", "yes", "on")
+    if not enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Routines are disabled. Set ACS_ENABLE_ROUTINES=true to enable."
+        )
+
+
 @app.post("/api/routine/preview", response_class=JSONResponse)
 def api_routine_preview(req: RoutinePreviewReq) -> JSONResponse:
+    check_routines_enabled()
     target = get_repo(req.repo)
     try:
         preview, token = run_wgx_routine_preview(target.key, target.path, req.id)
@@ -422,6 +439,7 @@ def api_routine_preview(req: RoutinePreviewReq) -> JSONResponse:
 
 @app.post("/api/routine/apply", response_class=JSONResponse)
 def api_routine_apply(req: RoutineApplyReq) -> JSONResponse:
+    check_routines_enabled()
     target = get_repo(req.repo)
     try:
         result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token)

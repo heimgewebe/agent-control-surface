@@ -4,6 +4,8 @@ from pathlib import Path
 from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact, extract_json_from_stdout
 from panel.runner import CmdResult
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from panel.app import app
 
 # Mock JSON responses matching WGX output
 MOCK_AUDIT_JSON = json.dumps({
@@ -70,6 +72,8 @@ def mock_run_wgx(monkeypatch):
                  return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
              elif repo == "fail_repo":
                  return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
+             elif repo == "metarepo": # For API tests using metarepo
+                 return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
         # Check for routine preview - assumed to NOT have --stdout-json by default now
         if "routine" in cmd and "preview" in cmd:
@@ -286,3 +290,56 @@ def test_run_wgx_routine_stdout_fallback_file_path(tmp_path, monkeypatch):
 
     preview, token = run_wgx_routine_preview(repo_key, repo_path, routine_id)
     assert preview["kind"] == "routine.preview"
+
+# API & Sync Fallback Tests
+
+def test_api_audit_git_sync_fallback(monkeypatch):
+    """Test that sync audit endpoint falls back to file mode if stdout fails."""
+    client = TestClient(app)
+
+    # First call fails (stdout_json=True), second call succeeds (file mode)
+    call_count = 0
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        nonlocal call_count
+        call_count += 1
+
+        # 1. Stdout attempt -> Fail
+        if "--stdout-json" in cmd:
+            return CmdResult(1, "invalid json", "error", cmd)
+
+        # 2. File mode attempt -> Succeed (return mock JSON directly for simplicity here,
+        # normally it reads file, but ops logic handles "valid JSON in stdout" as fallback too)
+        return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    response = client.get("/api/audit/git/sync?repo=metarepo")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert call_count == 2 # Should have tried twice
+
+def test_routines_safety_gate(monkeypatch):
+    """Test that routine endpoints are disabled by default."""
+    client = TestClient(app)
+
+    # Default: disabled -> 403
+    monkeypatch.delenv("ACS_ENABLE_ROUTINES", raising=False)
+
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
+    assert res.status_code == 403
+    assert "disabled" in res.json()["detail"]
+
+    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x"})
+    assert res.status_code == 403
+
+def test_routines_safety_gate_enabled(monkeypatch, mock_run_wgx):
+    """Test that routine endpoints work when enabled."""
+    client = TestClient(app)
+
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+
+    # Preview
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
+    assert res.status_code == 200
+    assert "confirm_token" in res.json()
