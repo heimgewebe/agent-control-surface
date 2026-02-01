@@ -120,6 +120,9 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
   - Default: `false`.
   - Setzen auf `true` aktiviert `/api/routine/preview` und `/api/routine/apply`.
   - **Sicherheitshinweis:** Nur aktivieren, wenn ACS in einem gesicherten Netz läuft oder hinter einem Auth-Proxy steht. Routinen führen Shell-Kommandos im Kontext des Users aus.
+- **`ACS_ROUTINES_SHARED_SECRET`** (Env): Optionales Shared Secret für Actor-Endpunkte.
+  - Wenn gesetzt, erfordern `/api/routine/preview` und `/api/routine/apply` den Header `X-ACS-Actor-Token: <secret>`.
+  - Empfohlen, wenn Routinen aktiviert sind, um CSRF oder versehentliche Aufrufe zu verhindern.
 
 ### Endpunkte
 

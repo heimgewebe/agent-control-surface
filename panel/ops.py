@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -36,7 +37,7 @@ def create_token(data: dict[str, Any]) -> str:
     return token
 
 
-def validate_and_consume_token(token: str, repo: str, routine_id: str) -> bool:
+def validate_and_consume_token(token: str, repo: str, routine_id: str, preview_hash: str | None = None) -> bool:
     now = time.time()
     with TOKEN_LOCK:
         if token not in TOKEN_STORE:
@@ -51,6 +52,12 @@ def validate_and_consume_token(token: str, repo: str, routine_id: str) -> bool:
         data = entry["data"]
         # Mismatch -> delete token to prevent brute-forcing
         if data.get("repo") != repo or data.get("routine_id") != routine_id:
+            del TOKEN_STORE[token]
+            return False
+
+        # Check preview hash if available/required
+        stored_hash = data.get("preview_hash")
+        if stored_hash and preview_hash != stored_hash:
             del TOKEN_STORE[token]
             return False
 
@@ -183,23 +190,30 @@ def extract_json_from_stdout(stdout: str) -> Any | None:
     return None
 
 
+def _resolve_existing(path: Path, base_path: Path) -> Path | None:
+    if path.is_absolute():
+        return path if path.exists() else None
+    resolved = base_path / path
+    return resolved if resolved.exists() else None
+
+
 def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
     """Attempts to find a valid file path in stdout (e.g., ending in .json)."""
     stripped = stdout.strip()
 
     # Check if the whole line is a path
     if stripped.endswith(".json"):
-        p = Path(stripped)
-        if (base_path / p).exists() or p.exists():
-            return p
+        resolved = _resolve_existing(Path(stripped), base_path)
+        if resolved:
+            return resolved
 
     # Look for tokens ending in .json
     tokens = re.split(r'\s+', stdout)
     for token in tokens:
         if token.endswith(".json"):
-            p = Path(token)
-            if (base_path / p).exists() or p.exists():
-                return p
+            resolved = _resolve_existing(Path(token), base_path)
+            if resolved:
+                return resolved
 
     return None
 
@@ -232,36 +246,30 @@ def run_wgx_audit_git(
                 raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout contains no valid JSON: {detail}")
             raise RuntimeError(f"WGX audit returned invalid JSON on stdout: {output[:200]}")
     else:
-        # File artifact mode (default)
+        # File artifact mode (default) - STRICTER fallback logic
         # 1. Try to find path in output
-        json_path = extract_path_from_stdout(output, repo_path)
+        target_file = extract_path_from_stdout(output, repo_path)
 
-        if json_path:
-            # Resolve absolute or relative path
-            target_file = json_path if json_path.is_absolute() else (repo_path / json_path)
+        if target_file:
             try:
                 with open(target_file, "r", encoding="utf-8") as f:
                     audit_data = json.load(f)
             except Exception as e:
                 raise RuntimeError(f"Failed to read audit artifact at {target_file}: {e}")
         else:
-            # 2. Fallback: try parsing stdout as JSON anyway (maybe tool outputted JSON despite no flag?)
-            audit_data = extract_json_from_stdout(output)
-
-            if audit_data is None:
-                # 3. Fallback: check canonical default location
-                default_path = repo_path / ".wgx/out/audit.git.v1.json"
-                if default_path.exists():
-                    try:
-                        with open(default_path, "r", encoding="utf-8") as f:
-                            audit_data = json.load(f)
-                    except Exception as e:
-                        raise RuntimeError(f"Failed to read default audit artifact: {e}")
-                else:
-                    if res.code != 0:
-                        detail = res.stderr or output[:200]
-                        raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {detail}")
-                    raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
+            # 2. Check canonical default location
+            default_path = repo_path / ".wgx/out/audit.git.v1.json"
+            if default_path.exists():
+                try:
+                    with open(default_path, "r", encoding="utf-8") as f:
+                        audit_data = json.load(f)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to read default audit artifact: {e}")
+            else:
+                if res.code != 0:
+                    detail = res.stderr or output[:200]
+                    raise RuntimeError(f"WGX audit failed (code {res.code}) and no JSON artifact found: {detail}")
+                raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
 
     # Validate with Pydantic
     try:
@@ -314,10 +322,10 @@ def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
     return None
 
 
-def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> tuple[dict[str, Any], str]:
+def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> tuple[dict[str, Any], str, str]:
     """
     Runs `wgx routine <id> preview`.
-    Returns (preview_json, confirm_token).
+    Returns (preview_json, confirm_token, preview_hash).
     """
     # Removed --stdout-json assumption to align with likely CLI contract
     cmd = ["wgx", "routine", routine_id, "preview"]
@@ -325,6 +333,7 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     res = run(cmd, cwd=repo_path, timeout=60)
 
     output = res.stdout.strip()
+    # Try stdout extraction first as some routines might output JSON
     preview_data = extract_json_from_stdout(output)
 
     if preview_data is None:
@@ -336,7 +345,7 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
         path_candidate = extract_path_from_stdout(output, repo_path)
         if path_candidate:
              try:
-                with open(path_candidate if path_candidate.is_absolute() else (repo_path / path_candidate), "r", encoding="utf-8") as f:
+                with open(path_candidate, "r", encoding="utf-8") as f:
                     preview_data = json.load(f)
              except Exception:
                 pass
@@ -354,17 +363,21 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
             detail = res.stderr or output[:200]
             raise RuntimeError(f"Could not parse routine preview output: {detail}")
 
-    token = create_token({"repo": repo_key, "routine_id": routine_id})
-    return preview_data, token
+    # Calculate canonical hash of the preview content
+    canonical = json.dumps(preview_data, sort_keys=True, separators=(",", ":"))
+    preview_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": preview_hash})
+    return preview_data, token, preview_hash
 
 
-def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str) -> dict[str, Any]:
+def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str, preview_hash: str | None = None) -> dict[str, Any]:
     """
     Validates token, runs `wgx routine <id> apply`.
     Returns result json.
     """
-    if not validate_and_consume_token(token, repo_key, routine_id):
-        raise HTTPException(status_code=403, detail="Invalid or expired confirmation token.")
+    if not validate_and_consume_token(token, repo_key, routine_id, preview_hash):
+        raise HTTPException(status_code=403, detail="Invalid, expired, or mismatched confirmation token.")
 
     # Removed --stdout-json assumption
     cmd = ["wgx", "routine", routine_id, "apply"]
@@ -379,7 +392,7 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
         path_candidate = extract_path_from_stdout(output, repo_path)
         if path_candidate:
              try:
-                with open(path_candidate if path_candidate.is_absolute() else (repo_path / path_candidate), "r", encoding="utf-8") as f:
+                with open(path_candidate, "r", encoding="utf-8") as f:
                     result_data = json.load(f)
              except Exception:
                 pass

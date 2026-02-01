@@ -157,6 +157,7 @@ class RoutineApplyReq(BaseModel):
     repo: str
     id: str
     confirm_token: str
+    preview_hash: str | None = None
 
 
 class PublishJobResponse(BaseModel):
@@ -432,7 +433,7 @@ def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
     return JSONResponse(result.model_dump())
 
 
-def check_routines_enabled() -> None:
+def check_routines_enabled(request: Request) -> None:
     enabled = os.getenv("ACS_ENABLE_ROUTINES", "false").lower() in ("true", "1", "yes", "on")
     if not enabled:
         raise HTTPException(
@@ -440,24 +441,33 @@ def check_routines_enabled() -> None:
             detail="Routines are disabled. Set ACS_ENABLE_ROUTINES=true to enable."
         )
 
+    secret = os.getenv("ACS_ROUTINES_SHARED_SECRET", "").strip()
+    if secret:
+        token = request.headers.get("X-ACS-Actor-Token", "").strip()
+        if token != secret:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or missing X-ACS-Actor-Token header."
+            )
+
 
 @app.post("/api/routine/preview", response_class=JSONResponse)
-def api_routine_preview(req: RoutinePreviewReq) -> JSONResponse:
-    check_routines_enabled()
+def api_routine_preview(req: RoutinePreviewReq, request: Request) -> JSONResponse:
+    check_routines_enabled(request)
     target = get_repo(req.repo)
     try:
-        preview, token = run_wgx_routine_preview(target.key, target.path, req.id)
-        return JSONResponse({"preview": preview, "confirm_token": token})
+        preview, token, preview_hash = run_wgx_routine_preview(target.key, target.path, req.id)
+        return JSONResponse({"preview": preview, "confirm_token": token, "preview_hash": preview_hash})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/routine/apply", response_class=JSONResponse)
-def api_routine_apply(req: RoutineApplyReq) -> JSONResponse:
-    check_routines_enabled()
+def api_routine_apply(req: RoutineApplyReq, request: Request) -> JSONResponse:
+    check_routines_enabled(request)
     target = get_repo(req.repo)
     try:
-        result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token)
+        result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token, req.preview_hash)
         # If routine reports failure (ok=False), return 409 Conflict so clients handle it semantically
         if not result.get("ok"):
             return JSONResponse(result, status_code=409)

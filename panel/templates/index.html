@@ -1006,6 +1006,7 @@
 
       let currentRoutineId = null;
       let currentConfirmToken = null;
+      let currentPreviewHash = null;
 
       async function previewRoutine(routineId) {
         const repoValue = ensureRepo();
@@ -1013,6 +1014,7 @@
 
         currentRoutineId = routineId;
         currentConfirmToken = null;
+        currentPreviewHash = null;
         document.getElementById("routinePreviewContainer").style.display = "block";
         document.getElementById("previewRoutineId").textContent = routineId;
         document.getElementById("previewJson").textContent = "Loading preview...";
@@ -1025,12 +1027,16 @@
             body: JSON.stringify({ repo: repoValue, id: routineId }),
           });
           if (!res.ok) {
+            if (res.status === 403) {
+                throw new Error("Routinen deaktiviert (ACS_ENABLE_ROUTINES=false oder fehlende Rechte).");
+            }
             const txt = await res.text();
             throw new Error(formatErrorMessage(txt));
           }
           const data = await res.json();
           document.getElementById("previewJson").textContent = JSON.stringify(data.preview, null, 2);
           currentConfirmToken = data.confirm_token;
+          currentPreviewHash = data.preview_hash;
         } catch (e) {
           document.getElementById("previewJson").textContent = `Error: ${e.message}`;
         }
@@ -1049,11 +1055,15 @@
             body: JSON.stringify({
               repo: repoValue,
               id: currentRoutineId,
-              confirm_token: currentConfirmToken
+              confirm_token: currentConfirmToken,
+              preview_hash: currentPreviewHash
             }),
           });
 
           if (!res.ok) {
+            if (res.status === 403) {
+                throw new Error("Routinen deaktiviert (ACS_ENABLE_ROUTINES=false oder fehlende Rechte).");
+            }
             const txt = await res.text();
             throw new Error(formatErrorMessage(txt));
           }
