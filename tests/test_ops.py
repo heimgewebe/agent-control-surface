@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact
+from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact, extract_json_from_stdout
 from panel.runner import CmdResult
 from fastapi import HTTPException
 
@@ -71,12 +71,12 @@ def mock_run_wgx(monkeypatch):
              elif repo == "fail_repo":
                  return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
 
-        # Check for routine preview
+        # Check for routine preview - assumed to NOT have --stdout-json by default now
         if "routine" in cmd and "preview" in cmd:
             if "git.repair.remote-head" in cmd:
                 return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
 
-        # Check for routine apply
+        # Check for routine apply - assumed to NOT have --stdout-json by default now
         if "routine" in cmd and "apply" in cmd:
             if "git.repair.remote-head" in cmd:
                 return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
@@ -236,8 +236,8 @@ def test_run_wgx_audit_git_file_mode(tmp_path, monkeypatch):
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
 
-def test_run_wgx_audit_git_stdout_noise(monkeypatch):
-    """Test robust JSON extraction when stdout contains noise."""
+def test_run_wgx_audit_git_stdout_noise_info(monkeypatch):
+    """Test robust JSON extraction when stdout contains [INFO] tags which are brackets."""
     repo_path = Path("/tmp/mock_repo")
 
     noisy_output = f"[INFO] Starting audit\n{MOCK_AUDIT_JSON}\n[DEBUG] Cleanup done"
@@ -252,4 +252,37 @@ def test_run_wgx_audit_git_stdout_noise(monkeypatch):
     result = run_wgx_audit_git("mock_repo", repo_path, "corr-test", stdout_json=True)
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
-    assert result.correlation_id == "corr-test"  # verify override
+    assert result.correlation_id == "corr-test"
+
+def test_extract_json_from_stdout_nested_brackets():
+    """Test parsing JSON objects that contain brackets/braces in strings."""
+    complex_json = json.dumps({"key": "value with { braces }", "list": [1, 2, 3]})
+    noisy = f"Some text {complex_json} trailing text"
+    result = extract_json_from_stdout(noisy)
+    assert result is not None
+    assert result["key"] == "value with { braces }"
+    assert result["list"] == [1, 2, 3]
+
+def test_run_wgx_routine_stdout_fallback_file_path(tmp_path, monkeypatch):
+    """
+    Test that if wgx routine outputs a file path instead of JSON (because no --stdout-json flag),
+    the code correctly reads that file.
+    """
+    repo_path = tmp_path
+    repo_key = "mock_repo"
+    routine_id = "git.repair.remote-head"
+
+    # Setup artifact file
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    artifact_path = out_dir / "routine.preview.json"
+    artifact_path.write_text(MOCK_PREVIEW_JSON)
+
+    # Mock run to return path
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        return CmdResult(0, str(artifact_path), "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    preview, token = run_wgx_routine_preview(repo_key, repo_path, routine_id)
+    assert preview["kind"] == "routine.preview"

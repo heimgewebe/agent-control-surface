@@ -917,7 +917,15 @@
               const result = data.results.find((r) => r.action === "audit.git");
               if (result && result.audit) {
                 renderAudit(result.audit);
-                setAuditStatus("Audit abgeschlossen.", "success");
+                // UX refinement: status text reflects audit finding, not just job success
+                const auditStatus = result.audit.status || "unknown";
+                if (auditStatus === "ok") {
+                    setAuditStatus("Audit abgeschlossen: OK", "success");
+                } else if (auditStatus === "warn") {
+                    setAuditStatus("Audit abgeschlossen: Warnungen", "warn");
+                } else {
+                    setAuditStatus("Audit abgeschlossen: Fehler gefunden", "error");
+                }
               } else if (result) {
                 setAuditStatus(
                   `❌ Audit beendet, aber kein Ergebnis: ${result.message}`,

@@ -126,22 +126,59 @@ def now_iso() -> str:
 # ------------------------------------------------------------------------------
 
 def extract_json_from_stdout(stdout: str) -> Any | None:
-    """Attempts to find and parse a JSON block in a potentially noisy stdout."""
-    # Try parsing full stdout first
+    """Find and parse the first valid JSON object/array embedded in noisy stdout."""
+    s = stdout.strip()
+    if not s:
+        return None
+
+    # 1) Fast path: whole stdout is JSON
     try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
+        return json.loads(s)
+    except Exception:
         pass
 
-    # Try finding the first { and last }
-    start = stdout.find("{")
-    end = stdout.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = stdout[start : end + 1]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
+    # 2) Balanced scanner to find embedded JSON
+    def find_balanced(start_ch: str, end_ch: str) -> Any | None:
+        starts = [i for i, ch in enumerate(s) if ch == start_ch]
+        # Cap attempts to prevent excessive CPU on massive logs
+        for start in starts[:50]:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(s)):
+                ch = s[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                else:
+                    if ch == '"':
+                        in_str = True
+                        continue
+                    if ch == start_ch:
+                        depth += 1
+                    elif ch == end_ch:
+                        depth -= 1
+                        if depth == 0:
+                            candidate = s[start : i + 1]
+                            try:
+                                return json.loads(candidate)
+                            except Exception:
+                                break  # matched brackets but invalid JSON? try next start
+            # If loop finishes without depth==0, this start was unmatched
+        return None
+
+    # Prefer object, then array
+    obj = find_balanced("{", "}")
+    if obj is not None:
+        return obj
+    arr = find_balanced("[", "]")
+    if arr is not None:
+        return arr
 
     return None
 
@@ -280,7 +317,8 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     Runs `wgx routine <id> preview`.
     Returns (preview_json, confirm_token).
     """
-    cmd = ["wgx", "routine", routine_id, "preview", "--stdout-json"]
+    # Removed --stdout-json assumption to align with likely CLI contract
+    cmd = ["wgx", "routine", routine_id, "preview"]
 
     res = run(cmd, cwd=repo_path, timeout=60)
 
@@ -291,14 +329,24 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
         if res.code != 0:
              raise RuntimeError(f"Routine preview failed: {res.stderr or output[:200]}")
 
-        # Fallback to checking default file if CLI didn't honor stdout-json or output was messy
-        default_path = repo_path / ".wgx/out/routine.preview.json"
-        if default_path.exists():
-            try:
-                with open(default_path, "r", encoding="utf-8") as f:
+        # Fallback to checking default file if CLI didn't output JSON
+        # Strategy: check if stdout is a path, otherwise try default location
+        path_candidate = extract_path_from_stdout(output, repo_path)
+        if path_candidate:
+             try:
+                with open(path_candidate if path_candidate.is_absolute() else (repo_path / path_candidate), "r", encoding="utf-8") as f:
                     preview_data = json.load(f)
-            except Exception:
+             except Exception:
                 pass
+
+        if preview_data is None:
+            default_path = repo_path / ".wgx/out/routine.preview.json"
+            if default_path.exists():
+                try:
+                    with open(default_path, "r", encoding="utf-8") as f:
+                        preview_data = json.load(f)
+                except Exception:
+                    pass
 
         if preview_data is None:
             raise RuntimeError(f"Could not parse routine preview output: {output[:200]}")
@@ -315,7 +363,8 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
     if not validate_and_consume_token(token, repo_key, routine_id):
         raise HTTPException(status_code=403, detail="Invalid or expired confirmation token.")
 
-    cmd = ["wgx", "routine", routine_id, "apply", "--stdout-json"]
+    # Removed --stdout-json assumption
+    cmd = ["wgx", "routine", routine_id, "apply"]
 
     res = run(cmd, cwd=repo_path, timeout=300)
 
@@ -323,14 +372,23 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
     result_data = extract_json_from_stdout(output)
 
     if result_data is None:
-        # Fallback to default file
-        default_path = repo_path / ".wgx/out/routine.result.json"
-        if default_path.exists():
-            try:
-                with open(default_path, "r", encoding="utf-8") as f:
+        # Fallback logic
+        path_candidate = extract_path_from_stdout(output, repo_path)
+        if path_candidate:
+             try:
+                with open(path_candidate if path_candidate.is_absolute() else (repo_path / path_candidate), "r", encoding="utf-8") as f:
                     result_data = json.load(f)
-            except Exception:
+             except Exception:
                 pass
+
+        if result_data is None:
+            default_path = repo_path / ".wgx/out/routine.result.json"
+            if default_path.exists():
+                try:
+                    with open(default_path, "r", encoding="utf-8") as f:
+                        result_data = json.load(f)
+                except Exception:
+                    pass
 
         if result_data is None:
             if res.code != 0:
