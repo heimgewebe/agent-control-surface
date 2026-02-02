@@ -1396,12 +1396,12 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
         audit_result = run_wgx_audit_git(target.key, target.path, correlation_id)
         # Wrap audit result in ActionResult
         result = build_action_result(
-            ok=audit_result.status != "error",
+            ok=True,
             action="audit.git",
             repo=repo,
             correlation_id=correlation_id,
             message=f"Audit completed with status: {audit_result.status}",
-            error_kind=None if audit_result.status != "error" else "audit_failed",
+            error_kind=None,
             repo_path=target.path,
         )
         # Attach the full audit object

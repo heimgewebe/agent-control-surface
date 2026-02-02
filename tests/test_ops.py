@@ -503,3 +503,29 @@ def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     # Invalid ID (shell chars) -> 422
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "id; rm -rf /"})
     assert res.status_code == 422
+
+def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
+    """Test that file artifact mode works when only specific correlation-ID file exists."""
+    repo_path = tmp_path
+    corr_id = "specific-corr-id"
+
+    # Create the artifact file that wgx would create (specific name)
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    artifact_path = out_dir / f"audit.git.v1.{corr_id}.json"
+    artifact_path.write_text(MOCK_AUDIT_JSON)
+
+    # Ensure generic file DOES NOT exist
+    generic_path = out_dir / "audit.git.v1.json"
+    if generic_path.exists():
+        generic_path.unlink()
+
+    # Mock run to return nothing useful in stdout
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        return CmdResult(0, "some noisy stdout without path", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    result = run_wgx_audit_git("mock_repo", repo_path, corr_id, stdout_json=False)
+    assert isinstance(result, AuditGit)
+    assert result.status == "ok"
