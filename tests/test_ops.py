@@ -167,9 +167,10 @@ def test_run_wgx_routine_apply_invalid_token(mock_run_wgx):
     repo_path = Path("/tmp/mock_repo")
     repo_key = "mock_repo"
     routine_id = "git.repair.remote-head"
+    dummy_hash = "0" * 64
 
     with pytest.raises(HTTPException) as excinfo:
-        run_wgx_routine_apply(repo_key, repo_path, routine_id, "invalid-token")
+        run_wgx_routine_apply(repo_key, repo_path, routine_id, "invalid-token", dummy_hash)
 
     assert excinfo.value.status_code == 403
 
@@ -191,9 +192,7 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
 
 def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
     """
-    Test that a non-zero exit code is tolerated if valid JSON is returned.
-    This simulates a routine that reports 'ok' in JSON but exits with error code,
-    or just reports a structured error.
+    Test that a non-zero exit code is tolerated if valid JSON with 'ok' field is returned.
     """
     repo_path = Path("/tmp/mock_repo")
     repo_key = "mock_repo"
@@ -202,9 +201,34 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
     # Manually create valid token for test
     token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
+    # fail.test mock returns MOCK_RESULT_JSON which has "ok": True
     result = run_wgx_routine_apply(repo_key, repo_path, routine_id, token, "abc")
     assert result["kind"] == "routine.result"
     assert result["ok"] is True
+    assert result.get("_exit_code") == 1
+
+def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, mock_run_wgx):
+    """
+    Test that non-zero exit code raises Error if JSON lacks 'ok' field.
+    """
+    repo_path = Path("/tmp/mock_repo")
+    repo_key = "mock_repo"
+    routine_id = "crash.test"
+
+    bad_json = json.dumps({"kind": "error", "message": "Crash"}) # No 'ok'
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        if "crash.test" in cmd:
+            return CmdResult(1, bad_json, "stderr logs", cmd)
+        return CmdResult(0, "{}", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+    token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_routine_apply(repo_key, repo_path, routine_id, token, "abc")
+
+    assert "lacks 'ok' field" in str(excinfo.value)
 
 def test_get_latest_audit_artifact(tmp_path):
     # Setup .wgx/out structure

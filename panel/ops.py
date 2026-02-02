@@ -371,7 +371,7 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     return preview_data, token, preview_hash
 
 
-def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str, preview_hash: str | None = None) -> dict[str, Any]:
+def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str, preview_hash: str) -> dict[str, Any]:
     """
     Validates token, runs `wgx routine <id> apply`.
     Returns result json.
@@ -406,10 +406,21 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
                 except Exception:
                     pass
 
-        if result_data is None:
-            if res.code != 0:
-                 raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr or output[:200]}")
-            else:
-                 raise RuntimeError(f"Routine apply succeeded (exit 0) but no JSON output found: {output[:200]}")
+    if result_data is None:
+        if res.code != 0:
+             raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr or output[:200]}")
+        else:
+             raise RuntimeError(f"Routine apply succeeded (exit 0) but no JSON output found: {output[:200]}")
+
+    # Semantics check: non-zero exit but valid JSON?
+    if res.code != 0:
+        if "ok" in result_data:
+            # Tolerable: CLI returned error code but also structured result (e.g. partial success or structured failure)
+            # Inject exit code for diagnostics if logging later
+            result_data["_exit_code"] = res.code
+        else:
+            # Fatal: CLI failed and JSON doesn't look like a standard result (no 'ok' field)
+            detail = res.stderr or output[:200]
+            raise RuntimeError(f"Routine apply failed (code {res.code}) and JSON result lacks 'ok' field: {detail}")
 
     return result_data
