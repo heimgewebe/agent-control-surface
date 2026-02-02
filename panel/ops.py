@@ -37,7 +37,7 @@ def create_token(data: dict[str, Any]) -> str:
     return token
 
 
-def validate_and_consume_token(token: str, repo: str, routine_id: str, preview_hash: str | None = None) -> bool:
+def validate_and_consume_token(token: str, repo_key: str, routine_id: str, preview_hash: str | None = None) -> bool:
     now = time.time()
     with TOKEN_LOCK:
         if token not in TOKEN_STORE:
@@ -51,7 +51,8 @@ def validate_and_consume_token(token: str, repo: str, routine_id: str, preview_h
 
         data = entry["data"]
         # Mismatch -> delete token to prevent brute-forcing
-        if data.get("repo") != repo or data.get("routine_id") != routine_id:
+        # Use 'repo_key' consistently
+        if data.get("repo_key") != repo_key or data.get("routine_id") != routine_id:
             del TOKEN_STORE[token]
             return False
 
@@ -240,7 +241,12 @@ def run_wgx_audit_git(
 
     if stdout_json:
         audit_data = extract_json_from_stdout(output)
-        if audit_data is None:
+
+        if audit_data:
+            # If we got JSON, accept it even if exit code is non-zero (diagnostic info)
+            if isinstance(audit_data, dict):
+                audit_data["_exit_code"] = res.code
+        else:
             if res.code != 0:
                 detail = res.stderr or output[:200]
                 raise RuntimeError(f"WGX audit failed (code {res.code}) and stdout contains no valid JSON: {detail}")
@@ -341,6 +347,11 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     # Try stdout extraction first as some routines might output JSON
     preview_data = extract_json_from_stdout(output)
 
+    # If we got JSON, accept it even if exit code is non-zero
+    if preview_data:
+        if isinstance(preview_data, dict):
+            preview_data["_exit_code"] = res.code
+
     if preview_data is None:
         if res.code != 0:
              raise RuntimeError(f"Routine preview failed: {res.stderr or output[:200]}")
@@ -372,7 +383,7 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     canonical = json.dumps(preview_data, sort_keys=True, separators=(",", ":"))
     preview_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": preview_hash})
+    token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": preview_hash})
     return preview_data, token, preview_hash
 
 
@@ -411,6 +422,10 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
                 except Exception:
                     pass
 
+    if result_data:
+        if isinstance(result_data, dict):
+            result_data["_exit_code"] = res.code
+
     if result_data is None:
         if res.code != 0:
              raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr or output[:200]}")
@@ -421,8 +436,7 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
     if res.code != 0:
         if "ok" in result_data:
             # Tolerable: CLI returned error code but also structured result (e.g. partial success or structured failure)
-            # Inject exit code for diagnostics if logging later
-            result_data["_exit_code"] = res.code
+            pass
         else:
             # Fatal: CLI failed and JSON doesn't look like a standard result (no 'ok' field)
             detail = res.stderr or output[:200]

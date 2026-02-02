@@ -914,10 +914,17 @@
 
             if (data.status === "done") {
               clearInterval(auditPoll);
-              const result = data.results.find((r) => r.action === "audit.git");
+
+              // Robust extraction: supports array of results or direct result property
+              let result = null;
+              if (Array.isArray(data.results)) {
+                  result = data.results.find((r) => r.action === "audit.git");
+              } else if (data.result && data.result.action === "audit.git") {
+                  result = data.result;
+              }
+
               if (result && result.audit) {
                 renderAudit(result.audit);
-                // UX refinement: status text reflects audit finding, not just job success
                 const auditStatus = result.audit.status || "unknown";
                 if (auditStatus === "ok") {
                     setAuditStatus("Audit abgeschlossen: OK", "success");

@@ -59,6 +59,13 @@ MOCK_RESULT_JSON = json.dumps({
     "stdout": "Fixed."
 })
 
+@pytest.fixture(autouse=True)
+def _reset_token_store():
+    from panel.ops import TOKEN_STORE
+    TOKEN_STORE.clear()
+    yield
+    TOKEN_STORE.clear()
+
 @pytest.fixture
 def mock_run_wgx(monkeypatch):
     def _run(cmd, cwd, timeout=60, **kwargs):
@@ -190,7 +197,7 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
 
     assert excinfo.value.status_code == 403
 
-def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
+def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, mock_run_wgx):
     """
     Test that a non-zero exit code is tolerated if valid JSON with 'ok' field is returned.
     """
@@ -199,9 +206,23 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(mock_run_wgx):
     routine_id = "fail.test"
 
     # Manually create valid token for test
-    token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
+    token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
     # fail.test mock returns MOCK_RESULT_JSON which has "ok": True
+    # The runner returns exit code 0 for this mock in _run setup for previous tests,
+    # but we need to ensure it has _exit_code injected if real run returns nonzero.
+    # Let's adjust the test to ensure we are testing the nonzero behavior.
+
+    # We need a new mock behavior for this test to force nonzero exit but valid JSON
+    monkeypatch.undo() # Revert previous mock to apply specific behavior
+
+    def _run_nonzero(cmd, cwd, timeout=60, **kwargs):
+        if "fail.test" in cmd:
+            return CmdResult(1, MOCK_RESULT_JSON, "", cmd)
+        return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run_nonzero)
+
     result = run_wgx_routine_apply(repo_key, repo_path, routine_id, token, "abc")
     assert result["kind"] == "routine.result"
     assert result["ok"] is True
@@ -223,7 +244,7 @@ def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, mock_run_wgx
         return CmdResult(0, "{}", "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
-    token = create_token({"repo": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
+    token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
     with pytest.raises(RuntimeError) as excinfo:
         run_wgx_routine_apply(repo_key, repo_path, routine_id, token, "abc")
@@ -422,7 +443,7 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     monkeypatch.setattr("panel.ops.run", _run)
 
     # Register token manually with hash
-    real_token = create_token({"repo": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"})
+    real_token = create_token({"repo_key": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"})
 
     res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token, "preview_hash": "abc"})
     assert res.status_code == 409
@@ -451,7 +472,7 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    real_token = create_token({"repo": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
+    real_token = create_token({"repo_key": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
 
     res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"})
     assert res.status_code == 500
