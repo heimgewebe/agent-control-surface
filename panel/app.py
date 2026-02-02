@@ -15,16 +15,52 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
+from .ops import (
+    AuditGit,
+    get_latest_audit_artifact,
+    run_wgx_audit_git,
+    run_wgx_routine_preview,
+    run_wgx_routine_apply,
+)
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
 
 app = FastAPI(title="agent-control-surface")
+
+# CORS Configuration
+# Allow origins via env var (comma-separated).
+# Default to empty/restricted to prevent accidental exposure in production.
+# For local dev with separate frontend, set ACS_CORS_ALLOW_ORIGINS="http://localhost:5173"
+_origins_env = os.getenv("ACS_CORS_ALLOW_ORIGINS", "")
+cors_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
+# Configure CORS only if origins are provided
+if cors_origins:
+    # Browsers reject allow_credentials=True with allow_origins=["*"]
+    allow_creds = True
+    final_origins = cors_origins
+
+    if "*" in cors_origins:
+        # Wildcard origin with credentials is not allowed by browsers.
+        # Force strict wildcard behavior: no credentials, explicit "*" origin.
+        allow_creds = False
+        final_origins = ["*"]
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=final_origins,
+        allow_credentials=allow_creds,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
@@ -91,6 +127,7 @@ class ActionResult(BaseModel):
     code: int | None = None
     error_kind: str | None = None
     message: str | None = None
+    audit: dict[str, Any] | None = None
     ts: str
     duration_ms: int | None = None
     correlation_id: str
@@ -115,6 +152,16 @@ class GitRepairStageBReq(BaseModel):
     delete_base_ref: bool = False
 
 
+class RoutinePreviewReq(BaseModel):
+    repo: str
+    id: str = Field(..., pattern=r"^[a-zA-Z0-9._-]+$")
+
+
+class RoutineApplyReq(BaseModel):
+    repo: str
+    id: str = Field(..., pattern=r"^[a-zA-Z0-9._-]+$")
+    confirm_token: str
+    preview_hash: str
 
 
 class PublishJobResponse(BaseModel):
@@ -331,6 +378,121 @@ def api_git_health_repair_stage_c(repo: str = Query(...)) -> JSONResponse:
     JOB_EXECUTOR.submit(run_git_health_job, job_id, correlation_id, repo, "git.repair.stage_c", None)
     payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
     return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.post("/api/audit/git", response_class=JSONResponse)
+def api_audit_git(repo: str = Query(...)) -> JSONResponse:
+    correlation_id = new_correlation_id()
+    job_id = str(uuid.uuid4())
+    job_state = JobState(job_id=job_id, status="queued")
+    with JOB_LOCK:
+        purge_jobs_locked()
+        JOBS[job_id] = job_state
+        JOB_CREATED_AT[job_id] = time.time()
+    JOB_EXECUTOR.submit(run_audit_job, job_id, correlation_id, repo)
+    payload = PublishJobResponse(job_id=job_id, correlation_id=correlation_id)
+    return JSONResponse(payload.model_dump(), status_code=202)
+
+
+@app.get("/api/audit/git/sync", response_class=JSONResponse)
+def api_audit_git_sync(repo: str = Query(...)) -> JSONResponse:
+    """Synchronous audit endpoint for viewers like Leitstand."""
+    target = get_repo(repo)
+    correlation_id = new_correlation_id()
+
+    # Try stdout_json=True first (fast, viewer-friendly)
+    try:
+        result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=True)
+        return JSONResponse(result.model_dump())
+    except Exception as e1:
+        # Log first failure for diagnostics
+        log_action({
+            "action": "audit.git.sync.stdout_json_failed",
+            "repo": target.key,
+            "correlation_id": correlation_id,
+            "error": str(e1)
+        })
+        # Fallback to file mode if stdout parsing/flag fails
+        try:
+            result = run_wgx_audit_git(target.key, target.path, correlation_id, stdout_json=False)
+            return JSONResponse(result.model_dump())
+        except Exception as e2:
+            # If both fail, log second failure and return error
+            log_action({
+                "action": "audit.git.sync.file_mode_failed",
+                "repo": target.key,
+                "correlation_id": correlation_id,
+                "error": str(e2)
+            })
+            raise HTTPException(status_code=500, detail=f"Audit failed (correlation_id={correlation_id}): {str(e2)}")
+
+
+@app.get("/api/audit/git/latest", response_class=JSONResponse)
+def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
+    """Returns the most recent audit artifact found in the repo."""
+    target = get_repo(repo)
+    # Filter artifacts by repo key to avoid returning stale/wrong data from shared dirs
+    result = get_latest_audit_artifact(target.path, repo_key=target.key)
+    if not result:
+        raise HTTPException(status_code=404, detail="No audit artifact found")
+    return JSONResponse(result.model_dump())
+
+
+def check_routines_enabled(request: Request) -> None:
+    enabled = os.getenv("ACS_ENABLE_ROUTINES", "false").lower() in ("true", "1", "yes", "on")
+    if not enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Routines are disabled. Set ACS_ENABLE_ROUTINES=true to enable."
+        )
+
+    secret = os.getenv("ACS_ROUTINES_SHARED_SECRET", "").strip()
+    if secret:
+        token = request.headers.get("X-ACS-Actor-Token", "").strip()
+        if token != secret:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or missing X-ACS-Actor-Token header."
+            )
+
+
+@app.post("/api/routine/preview", response_class=JSONResponse)
+def api_routine_preview(req: RoutinePreviewReq, request: Request) -> JSONResponse:
+    check_routines_enabled(request)
+    target = get_repo(req.repo)
+    try:
+        preview, token, preview_hash = run_wgx_routine_preview(target.key, target.path, req.id)
+        return JSONResponse({"preview": preview, "confirm_token": token, "preview_hash": preview_hash})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/routine/apply", response_class=JSONResponse)
+def api_routine_apply(req: RoutineApplyReq, request: Request) -> JSONResponse:
+    check_routines_enabled(request)
+    target = get_repo(req.repo)
+    try:
+        result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token, req.preview_hash)
+
+        # Validate result structure semantics
+        if "ok" not in result:
+            log_action({
+                "action": "routine.apply.missing_ok",
+                "repo": target.key,
+                "routine_id": req.id,
+                "result_keys": list(result.keys())
+            })
+            raise HTTPException(status_code=500, detail="Routine returned invalid result (missing 'ok' field).")
+
+        # If routine reports logical failure (ok=False), return 409 Conflict
+        if result["ok"] is False:
+            return JSONResponse(result, status_code=409)
+
+        return JSONResponse(result, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/jobs/{job_id}", response_class=JSONResponse)
@@ -1209,6 +1371,58 @@ def push_action(req: GitPushReq) -> tuple[ActionResult, int]:
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
     return result, 200 if ok else 500
+
+
+def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
+    set_job_status(job_id, "running")
+    start = time.monotonic()
+    try:
+        target = get_repo(repo)
+    except HTTPException as exc:
+        result = build_action_result(
+            ok=False,
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc.detail),
+            error_kind="invalid_repo",
+            code=1,
+        )
+        record_job_result(job_id, result)
+        set_job_status(job_id, "error")
+        return
+
+    try:
+        audit_result = run_wgx_audit_git(target.key, target.path, correlation_id)
+        # Wrap audit result in ActionResult
+        result = build_action_result(
+            ok=audit_result.status != "error",
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=f"Audit completed with status: {audit_result.status}",
+            error_kind=None if audit_result.status != "error" else "audit_failed",
+            repo_path=target.path,
+        )
+        # Attach the full audit object
+        result.audit = audit_result.model_dump()
+        result.duration_ms = int((time.monotonic() - start) * 1000)
+    except Exception as exc:
+        result = build_action_result(
+            ok=False,
+            action="audit.git",
+            repo=repo,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="internal",
+            code=1,
+            repo_path=target.path,
+        )
+
+    record_job_result(job_id, result)
+    # The job itself finished successfully (audit ran and produced a result),
+    # even if the audit found issues (status=error).
+    set_job_status(job_id, "done")
 
 
 def run_git_health_job(
