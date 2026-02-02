@@ -429,7 +429,8 @@ def api_audit_git_sync(repo: str = Query(...)) -> JSONResponse:
 def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
     """Returns the most recent audit artifact found in the repo."""
     target = get_repo(repo)
-    result = get_latest_audit_artifact(target.path)
+    # Filter artifacts by repo key to avoid returning stale/wrong data from shared dirs
+    result = get_latest_audit_artifact(target.path, repo_key=target.key)
     if not result:
         raise HTTPException(status_code=404, detail="No audit artifact found")
     return JSONResponse(result.model_dump())
@@ -470,10 +471,22 @@ def api_routine_apply(req: RoutineApplyReq, request: Request) -> JSONResponse:
     target = get_repo(req.repo)
     try:
         result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token, req.preview_hash)
-        # If routine reports failure (ok=False), return 409 Conflict so clients handle it semantically
-        if not result.get("ok"):
+
+        # Validate result structure semantics
+        if "ok" not in result:
+            log_action({
+                "action": "routine.apply.missing_ok",
+                "repo": target.key,
+                "routine_id": req.id,
+                "result_keys": list(result.keys())
+            })
+            raise HTTPException(status_code=500, detail="Routine returned invalid result (missing 'ok' field).")
+
+        # If routine reports logical failure (ok=False), return 409 Conflict
+        if result["ok"] is False:
             return JSONResponse(result, status_code=409)
-        return JSONResponse(result)
+
+        return JSONResponse(result, status_code=200)
     except HTTPException:
         raise
     except Exception as e:

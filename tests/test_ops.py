@@ -428,6 +428,35 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     assert res.status_code == 409
     assert res.json()["ok"] is False
 
+def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, mock_get_repo):
+    """Test that api_routine_apply returns 500 if the routine output lacks 'ok' field."""
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+
+    # Mock result without 'ok' field (invalid result structure)
+    mock_invalid_json = json.dumps({
+        "kind": "routine.result",
+        "id": "invalid.test",
+        "mode": "apply",
+        "mutating": True,
+        # "ok": is missing
+        "stdout": "Weird result."
+    })
+
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        if "invalid.test" in cmd:
+            # Exit code 0 so ops layer passes it through, but content is invalid for API
+            return CmdResult(0, mock_invalid_json, "", cmd)
+        return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    real_token = create_token({"repo": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
+
+    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"})
+    assert res.status_code == 500
+    assert "missing 'ok' field" in res.json()["detail"]
+
 def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that X-ACS-Actor-Token is required if secret is set."""
     client = TestClient(app)

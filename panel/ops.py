@@ -281,10 +281,11 @@ def run_wgx_audit_git(
         raise RuntimeError(f"Audit artifact validation failed: {e}")
 
 
-def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
+def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> AuditGit | None:
     """
     Scans .wgx/out/ for the most recent audit.git.v1.*.json artifact.
     Prioritizes specific correlation-id files over the generic copy if both exist.
+    Optional: filters by repo key found inside the artifact.
     """
     out_dir = repo_path / ".wgx" / "out"
     if not out_dir.exists():
@@ -306,6 +307,8 @@ def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
         try:
             with open(cand, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                if repo_key and data.get("repo") != repo_key:
+                    continue
                 return AuditGit.model_validate(data)
         except Exception:
             continue
@@ -315,6 +318,8 @@ def get_latest_audit_artifact(repo_path: Path) -> AuditGit | None:
         try:
             with open(cand, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                if repo_key and data.get("repo") != repo_key:
+                    continue
                 return AuditGit.model_validate(data)
         except Exception:
             continue
