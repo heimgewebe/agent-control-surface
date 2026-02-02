@@ -197,7 +197,7 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx):
 
     assert excinfo.value.status_code == 403
 
-def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, mock_run_wgx):
+def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch):
     """
     Test that a non-zero exit code is tolerated if valid JSON with 'ok' field is returned.
     """
@@ -208,14 +208,7 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, mock_
     # Manually create valid token for test
     token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
-    # fail.test mock returns MOCK_RESULT_JSON which has "ok": True
-    # The runner returns exit code 0 for this mock in _run setup for previous tests,
-    # but we need to ensure it has _exit_code injected if real run returns nonzero.
-    # Let's adjust the test to ensure we are testing the nonzero behavior.
-
-    # We need a new mock behavior for this test to force nonzero exit but valid JSON
-    monkeypatch.undo() # Revert previous mock to apply specific behavior
-
+    # Local mock runner that forces nonzero exit but valid JSON
     def _run_nonzero(cmd, cwd, timeout=60, **kwargs):
         if "fail.test" in cmd:
             return CmdResult(1, MOCK_RESULT_JSON, "", cmd)
