@@ -354,11 +354,12 @@ def test_routines_safety_gate(monkeypatch, mock_get_repo):
     monkeypatch.delenv("ACS_ENABLE_ROUTINES", raising=False)
 
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
-    assert res.status_code == 403
+    assert res.status_code == 403, res.text
     assert "disabled" in res.json()["detail"]
 
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x"})
-    assert res.status_code == 403
+    # Payload must be valid to reach 403
+    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"})
+    assert res.status_code == 403, res.text
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled."""
@@ -422,3 +423,16 @@ def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "supersecret"})
     assert res.status_code == 200
     assert "confirm_token" in res.json()
+
+def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
+    """Test that invalid routine IDs are rejected."""
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+
+    # Invalid ID (spaces) -> 422
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "invalid id with spaces"})
+    assert res.status_code == 422
+
+    # Invalid ID (shell chars) -> 422
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "id; rm -rf /"})
+    assert res.status_code == 422

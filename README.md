@@ -131,5 +131,5 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
 - `GET /api/audit/git/sync`: Führt `wgx audit git` synchron aus und liefert das Ergebnis (bevorzugt für Viewer).
 - `GET /api/audit/git/latest`: Liefert das letzte gespeicherte Audit-Artefakt.
 - `POST /api/audit/git`: Startet Audit als Background-Job.
-- `POST /api/routine/preview`: Startet Dry-Run für eine Routine (liefert `confirm_token`).
-- `POST /api/routine/apply`: Führt Routine aus (benötigt `confirm_token`).
+- `POST /api/routine/preview`: Startet Dry-Run für eine Routine (liefert `confirm_token` und `preview_hash`).
+- `POST /api/routine/apply`: Führt Routine aus (benötigt `confirm_token` und `preview_hash` aus dem Preview-Schritt).

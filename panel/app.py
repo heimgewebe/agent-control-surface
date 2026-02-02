@@ -152,14 +152,14 @@ class GitRepairStageBReq(BaseModel):
 
 class RoutinePreviewReq(BaseModel):
     repo: str
-    id: str
+    id: str = Field(..., pattern=r"^[a-zA-Z0-9._-]+$")
 
 
 class RoutineApplyReq(BaseModel):
     repo: str
-    id: str
+    id: str = Field(..., pattern=r"^[a-zA-Z0-9._-]+$")
     confirm_token: str
-    preview_hash: str | None = None
+    preview_hash: str
 
 
 class PublishJobResponse(BaseModel):
