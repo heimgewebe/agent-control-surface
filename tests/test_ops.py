@@ -529,3 +529,47 @@ def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
     result = run_wgx_audit_git("mock_repo", repo_path, corr_id, stdout_json=False)
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
+
+def test_api_audit_git_job_error_on_findings(monkeypatch, mock_get_repo, mock_run_wgx):
+    """
+    Test that if audit returns 'error' status (findings), the Job status becomes 'error',
+    but ActionResult.ok is True (execution success).
+    """
+    # 1. Setup the artifact file so run_wgx_audit_git succeeds (returns AuditGit object)
+    #    instead of failing with RuntimeError (which would set ok=False).
+    out_dir = mock_get_repo / ".wgx" / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # We create the generic fallback file because we can't predict correlation_id here
+    fail_audit_json = MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"')
+    (out_dir / "audit.git.v1.json").write_text(fail_audit_json)
+
+    client = TestClient(app)
+
+    # Use 'fail_repo'. mock_run_wgx ensures the command "runs" (returns CmdResult),
+    # and our file above ensures run_wgx_audit_git can parse the result.
+    res = client.post("/api/audit/git?repo=fail_repo")
+    assert res.status_code == 202
+    job_id = res.json()["job_id"]
+
+    # Poll manually since we don't have async loop in test
+    import time
+
+    # Access job state directly to verify
+    from panel.app import JOBS
+
+    # Wait for completion
+    for _ in range(20):
+        job = JOBS.get(job_id)
+        if job and job.status in ("done", "error"):
+            break
+        time.sleep(0.1)
+
+    assert job is not None
+    assert job.status == "error"
+
+    # Check result
+    result = job.results[0]
+    # This assertion confirms that despite Job Status="error", the tool execution was "ok"
+    assert result.ok is True
+    assert result.audit["status"] == "error"
