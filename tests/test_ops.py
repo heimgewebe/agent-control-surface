@@ -581,7 +581,10 @@ def test_run_audit_job_technical_error_unit(monkeypatch):
     Verifies that if tool execution fails (exception), Job status is 'error',
     and ActionResult.ok is False.
     """
+    # Ensure necessary imports are present for robustness
+    from pathlib import Path
     from panel.app import run_audit_job, ActionResult
+    from panel.repos import Repo
 
     # 1. Mock internal calls
     status_calls = []

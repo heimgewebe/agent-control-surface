@@ -140,3 +140,4 @@ Bei Audit-Jobs (`/api/audit/git`) gilt:
 - **`ActionResult.ok`**: Beschreibt den technischen Erfolg der *Ausführung* (Tool lief durch, Artefakt erstellt). Auch bei Audit-Fehlern ("Findings") ist `ok=true`.
 - **`result.audit.status`**: Enthält das eigentliche Audit-Ergebnis (`ok`, `warn`, `error`).
 - **Job Status**: Wird auf `error` gesetzt, wenn das Audit Findings (`status=error`) meldet oder ein technischer Fehler auftrat.
+  - Hinweis: Job Status `error` kann beides bedeuten. Zur Unterscheidung prüft man `ActionResult.ok`: `true` = Findings, `false` = technischer Fehler.
