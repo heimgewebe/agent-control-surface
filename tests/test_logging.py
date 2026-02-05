@@ -1,11 +1,14 @@
 import pytest
-from panel.logging import redact_secrets, _get_sensitive_env_values
+from pathlib import Path
+from panel.logging import redact_secrets, _get_sensitive_env_values, resolve_action_log_config, ActionLogConfig
 
 @pytest.fixture(autouse=True)
 def clear_env_cache():
     _get_sensitive_env_values.cache_clear()
+    resolve_action_log_config.cache_clear()
     yield
     _get_sensitive_env_values.cache_clear()
+    resolve_action_log_config.cache_clear()
 
 def test_redact_secrets(monkeypatch):
     # Test env var redaction using monkeypatch
@@ -67,3 +70,40 @@ def test_redact_secrets_deduplication(monkeypatch):
     text = "value=same_secret"
     redacted = redact_secrets(text)
     assert redacted == "value=[redacted]"
+
+def test_resolve_action_log_config(monkeypatch):
+    # Test default (empty)
+    monkeypatch.delenv("ACS_ACTION_LOG", raising=False)
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config() == ActionLogConfig(enabled=False, path=None)
+
+    # Test explicit disabled values
+    for val in ["0", "false", "no", "off"]:
+        monkeypatch.setenv("ACS_ACTION_LOG", val)
+        resolve_action_log_config.cache_clear()
+        assert resolve_action_log_config() == ActionLogConfig(enabled=False, path=None)
+
+    # Test explicit enabled values
+    for val in ["1", "true", "yes", "on"]:
+        monkeypatch.setenv("ACS_ACTION_LOG", val)
+        resolve_action_log_config.cache_clear()
+        assert resolve_action_log_config() == ActionLogConfig(enabled=True, path=None)
+
+    # Test path value
+    monkeypatch.setenv("ACS_ACTION_LOG", "/tmp/log.jsonl")
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config() == ActionLogConfig(enabled=True, path=Path("/tmp/log.jsonl"))
+
+def test_resolve_action_log_config_caching(monkeypatch):
+    # Initial state
+    monkeypatch.setenv("ACS_ACTION_LOG", "true")
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config().enabled is True
+
+    # Change env but don't clear cache -> should return old value
+    monkeypatch.setenv("ACS_ACTION_LOG", "false")
+    assert resolve_action_log_config().enabled is True
+
+    # Clear cache -> should return new value
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config().enabled is False
