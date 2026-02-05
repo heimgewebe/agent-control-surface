@@ -1423,7 +1423,12 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
     # The job finished, but status reflects the audit outcome.
     # If audit found errors, job status is 'error' (visible in listing),
     # but ActionResult.ok=True (execution success) ensures result is carried.
-    final_status = "error" if audit_result.status == "error" else "done"
+    # Note: result.audit might be None if execution failed (ok=False).
+    final_status = "done"
+    if not result.ok:
+        final_status = "error"
+    elif result.audit and result.audit.get("status") == "error":
+        final_status = "error"
     set_job_status(job_id, final_status)
 
 

@@ -574,3 +574,51 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     assert isinstance(result, ActionResult)
     assert result.ok is True
     assert result.audit["status"] == "error"
+
+def test_run_audit_job_technical_error_unit(monkeypatch):
+    """
+    Deterministic unit test for run_audit_job logic when technical error occurs.
+    Verifies that if tool execution fails (exception), Job status is 'error',
+    and ActionResult.ok is False.
+    """
+    from panel.app import run_audit_job, ActionResult
+
+    # 1. Mock internal calls
+    status_calls = []
+    result_calls = []
+
+    def mock_set_job_status(jid, status):
+        status_calls.append((jid, status))
+
+    def mock_record_job_result(jid, result):
+        result_calls.append((jid, result))
+
+    # Mock run_wgx_audit_git to RAISE exception
+    def mock_run_wgx_audit_git(*args, **kwargs):
+        raise RuntimeError("WGX crashed")
+
+    # We need mock_get_repo to succeed so we reach the audit call
+    from panel.repos import Repo
+    def mock_get_repo(key):
+        return Repo(key=key, path=Path("/tmp/mock"), display="mock")
+
+    monkeypatch.setattr("panel.app.set_job_status", mock_set_job_status)
+    monkeypatch.setattr("panel.app.record_job_result", mock_record_job_result)
+    monkeypatch.setattr("panel.app.run_wgx_audit_git", mock_run_wgx_audit_git)
+    monkeypatch.setattr("panel.app.get_repo", mock_get_repo)
+
+    # 2. Execute unit under test
+    run_audit_job("job-tech-fail", "corr-fail", "mock_repo")
+
+    # 3. Assertions
+    # Job ended with "error"
+    assert ("job-tech-fail", "error") in status_calls
+
+    # Result recorded with ok=False
+    assert result_calls
+    jid, result = result_calls[-1]
+    assert jid == "job-tech-fail"
+    assert isinstance(result, ActionResult)
+    assert result.ok is False
+    assert result.error_kind == "internal"
+    assert "WGX crashed" in result.message
