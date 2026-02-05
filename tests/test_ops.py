@@ -503,3 +503,125 @@ def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     # Invalid ID (shell chars) -> 422
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "id; rm -rf /"})
     assert res.status_code == 422
+
+def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
+    """Test that file artifact mode works when only specific correlation-ID file exists."""
+    repo_path = tmp_path
+    corr_id = "specific-corr-id"
+
+    # Create the artifact file that wgx would create (specific name)
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    artifact_path = out_dir / f"audit.git.v1.{corr_id}.json"
+    artifact_path.write_text(MOCK_AUDIT_JSON)
+
+    # Ensure generic file DOES NOT exist
+    generic_path = out_dir / "audit.git.v1.json"
+    if generic_path.exists():
+        generic_path.unlink()
+
+    # Mock run to return nothing useful in stdout
+    def _run(cmd, cwd, timeout=60, **kwargs):
+        return CmdResult(0, "some noisy stdout without path", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", _run)
+
+    result = run_wgx_audit_git("mock_repo", repo_path, corr_id, stdout_json=False)
+    assert isinstance(result, AuditGit)
+    assert result.status == "ok"
+
+def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
+    """
+    Deterministic unit test for run_audit_job logic.
+    Verifies that if audit returns 'error' status (findings), the Job status becomes 'error',
+    but ActionResult.ok is True (execution success).
+    """
+    from panel.app import run_audit_job, ActionResult
+
+    # 1. Mock internal calls
+    status_calls = []
+    result_calls = []
+
+    def mock_set_job_status(jid, status):
+        status_calls.append((jid, status))
+
+    def mock_record_job_result(jid, result):
+        result_calls.append((jid, result))
+
+    # Mock run_wgx_audit_git to directly return an AuditGit object with status="error"
+    mock_audit_data = json.loads(MOCK_AUDIT_JSON)
+    mock_audit_data["status"] = "error"
+    audit_obj = AuditGit(**mock_audit_data)
+
+    def mock_run_wgx_audit_git(*args, **kwargs):
+        return audit_obj
+
+    monkeypatch.setattr("panel.app.set_job_status", mock_set_job_status)
+    monkeypatch.setattr("panel.app.record_job_result", mock_record_job_result)
+    monkeypatch.setattr("panel.app.run_wgx_audit_git", mock_run_wgx_audit_git)
+
+    # 2. Execute unit under test
+    run_audit_job("job-123", "corr-456", "mock_repo")
+
+    # 3. Assertions
+    # Ensure job ended with "error" (due to audit findings)
+    assert ("job-123", "error") in status_calls
+
+    # Ensure result was recorded with ok=True (execution success) but audit.status="error"
+    assert result_calls
+    jid, result = result_calls[-1]
+    assert jid == "job-123"
+    assert isinstance(result, ActionResult)
+    assert result.ok is True
+    assert result.audit["status"] == "error"
+
+def test_run_audit_job_technical_error_unit(monkeypatch):
+    """
+    Deterministic unit test for run_audit_job logic when technical error occurs.
+    Verifies that if tool execution fails (exception), Job status is 'error',
+    and ActionResult.ok is False.
+    """
+    # Ensure necessary imports are present for robustness
+    from pathlib import Path
+    from panel.app import run_audit_job, ActionResult
+    from panel.repos import Repo
+
+    # 1. Mock internal calls
+    status_calls = []
+    result_calls = []
+
+    def mock_set_job_status(jid, status):
+        status_calls.append((jid, status))
+
+    def mock_record_job_result(jid, result):
+        result_calls.append((jid, result))
+
+    # Mock run_wgx_audit_git to RAISE exception
+    def mock_run_wgx_audit_git(*args, **kwargs):
+        raise RuntimeError("WGX crashed")
+
+    # We need mock_get_repo to succeed so we reach the audit call
+    from panel.repos import Repo
+    def mock_get_repo(key):
+        return Repo(key=key, path=Path("/tmp/mock"), display="mock")
+
+    monkeypatch.setattr("panel.app.set_job_status", mock_set_job_status)
+    monkeypatch.setattr("panel.app.record_job_result", mock_record_job_result)
+    monkeypatch.setattr("panel.app.run_wgx_audit_git", mock_run_wgx_audit_git)
+    monkeypatch.setattr("panel.app.get_repo", mock_get_repo)
+
+    # 2. Execute unit under test
+    run_audit_job("job-tech-fail", "corr-fail", "mock_repo")
+
+    # 3. Assertions
+    # Job ended with "error"
+    assert ("job-tech-fail", "error") in status_calls
+
+    # Result recorded with ok=False
+    assert result_calls
+    jid, result = result_calls[-1]
+    assert jid == "job-tech-fail"
+    assert isinstance(result, ActionResult)
+    assert result.ok is False
+    assert result.error_kind == "internal"
+    assert "WGX crashed" in result.message

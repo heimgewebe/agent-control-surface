@@ -133,3 +133,13 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
 - `POST /api/audit/git`: Startet Audit als Background-Job.
 - `POST /api/routine/preview`: Startet Dry-Run für eine Routine (liefert `confirm_token` und `preview_hash`).
 - `POST /api/routine/apply`: Führt Routine aus (benötigt `confirm_token` und `preview_hash` aus dem Preview-Schritt).
+
+### Semantik der API-Antworten
+
+Bei Audit-Jobs (`/api/audit/git`) gilt:
+- **`ActionResult.ok`**: Beschreibt den technischen Erfolg der *Ausführung* (Tool lief durch, Artefakt erstellt). Auch bei Audit-Fehlern ("Findings") ist `ok=true`.
+- **`result.audit.status`**: Enthält das eigentliche Audit-Ergebnis (`ok`, `warn`, `error`).
+- **Job Status**: Wird auf `error` gesetzt, wenn das Audit Findings (`status=error`) meldet oder ein technischer Fehler auftrat.
+  - **Disambiguation Rule**: If `job.status == "error"`:
+    - `ActionResult.ok == true` ⇒ Audit Findings (logical error)
+    - `ActionResult.ok == false` ⇒ Technical Failure (execution error)

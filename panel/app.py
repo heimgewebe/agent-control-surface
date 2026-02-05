@@ -1396,12 +1396,12 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
         audit_result = run_wgx_audit_git(target.key, target.path, correlation_id)
         # Wrap audit result in ActionResult
         result = build_action_result(
-            ok=audit_result.status != "error",
+            ok=True,
             action="audit.git",
             repo=repo,
             correlation_id=correlation_id,
             message=f"Audit completed with status: {audit_result.status}",
-            error_kind=None if audit_result.status != "error" else "audit_failed",
+            error_kind=None,
             repo_path=target.path,
         )
         # Attach the full audit object
@@ -1420,9 +1420,16 @@ def run_audit_job(job_id: str, correlation_id: str, repo: str) -> None:
         )
 
     record_job_result(job_id, result)
-    # The job itself finished successfully (audit ran and produced a result),
-    # even if the audit found issues (status=error).
-    set_job_status(job_id, "done")
+    # The job finished, but status reflects the audit outcome.
+    # If audit found errors, job status is 'error' (visible in listing),
+    # but ActionResult.ok=True (execution success) ensures result is carried.
+    # Note: result.audit might be None if execution failed (ok=False).
+    final_status = "done"
+    if not result.ok:
+        final_status = "error"
+    elif result.audit and result.audit.get("status") == "error":
+        final_status = "error"
+    set_job_status(job_id, final_status)
 
 
 def run_git_health_job(

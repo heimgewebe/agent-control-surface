@@ -912,7 +912,7 @@
             if (!res.ok) throw new Error("Job status fetch failed");
             const data = await res.json();
 
-            if (data.status === "done") {
+            if (data.status === "done" || data.status === "error") {
               clearInterval(auditPoll);
 
               // Robust extraction: supports array of results or direct result property
@@ -923,6 +923,7 @@
                   result = data.result;
               }
 
+              // Even if job status is 'error', we might have a valid audit result (execution success, audit findings)
               if (result && result.audit) {
                 renderAudit(result.audit);
                 const auditStatus = result.audit.status || "unknown";
@@ -933,6 +934,9 @@
                 } else {
                     setAuditStatus("Audit abgeschlossen: Fehler gefunden", "error");
                 }
+              } else if (data.status === "error") {
+                 // True technical job error without result payload
+                 setAuditStatus("❌ Audit fehlgeschlagen (Job Error).", "error");
               } else if (result) {
                 setAuditStatus(
                   `❌ Audit beendet, aber kein Ergebnis: ${result.message}`,
@@ -941,9 +945,6 @@
               } else {
                 setAuditStatus("❌ Audit beendet ohne Ergebnis.", "error");
               }
-            } else if (data.status === "error") {
-              clearInterval(auditPoll);
-              setAuditStatus("❌ Audit fehlgeschlagen (Job Error).", "error");
             }
           } catch (e) {
             setAuditStatus(`⚠️ Polling error: ${e.message}`, "warn");
