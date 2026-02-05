@@ -264,8 +264,8 @@ def run_wgx_audit_git(
                 raise RuntimeError(f"Failed to read audit artifact at {target_file}: {e}")
         else:
             # 2. Check canonical default location or correlation-specific file
-            default_path = repo_path / ".wgx/out/audit.git.v1.json"
-            specific_path = repo_path / f".wgx/out/audit.git.v1.{correlation_id}.json"
+            default_path = repo_path / ".wgx" / "out" / "audit.git.v1.json"
+            specific_path = repo_path / ".wgx" / "out" / f"audit.git.v1.{correlation_id}.json"
 
             # Prefer specific artifact to avoid reading stale generic file
             path_to_read = specific_path if specific_path.exists() else (default_path if default_path.exists() else None)
