@@ -43,7 +43,8 @@ def resolve_action_log_config() -> ActionLogConfig:
     return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
 
 
-@lru_cache(maxsize=1)
+# Cache a small window of dates to tolerate day rollover/tests/backfills in long-running processes.
+@lru_cache(maxsize=8)
 def _get_log_path_for_date(date_obj: date) -> Path:
     date_tag = date_obj.strftime("%Y-%m-%d")
     return DEFAULT_LOG_DIR / f"{date_tag}.jsonl"
