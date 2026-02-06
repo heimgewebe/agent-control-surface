@@ -118,3 +118,28 @@ def test_redact_secrets_deduplication(monkeypatch):
     text = "value=same_secret"
     redacted = redact_secrets(text)
     assert redacted == "value=[redacted]"
+
+
+def test_get_log_path_for_date_updates_correctly():
+    """Test that _get_log_path_for_date caches correctly and respects date changes."""
+    from datetime import date
+    from panel.logging import DEFAULT_LOG_DIR, _get_log_path_for_date
+
+    _get_log_path_for_date.cache_clear()
+
+    # Test initial date
+    date1 = date(2023, 10, 1)
+    path1 = _get_log_path_for_date(date1)
+    assert path1 == DEFAULT_LOG_DIR / "2023-10-01.jsonl"
+
+    # Call again with same date object -> should hit cache (implicit check, same result)
+    assert _get_log_path_for_date(date1) == path1
+
+    # Call with same date value but new object -> should work same
+    assert _get_log_path_for_date(date(2023, 10, 1)) == path1
+
+    # Change date -> should get new path
+    date2 = date(2023, 10, 2)
+    path2 = _get_log_path_for_date(date2)
+    assert path2 == DEFAULT_LOG_DIR / "2023-10-02.jsonl"
+    assert path2 != path1

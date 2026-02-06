@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -43,9 +43,15 @@ def resolve_action_log_config() -> ActionLogConfig:
     return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
 
 
-def resolve_daily_log_path() -> Path:
-    date_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+# Cache a small window of dates to tolerate day rollover/tests/backfills in long-running processes.
+@lru_cache(maxsize=8)
+def _get_log_path_for_date(date_obj: date) -> Path:
+    date_tag = date_obj.strftime("%Y-%m-%d")
     return DEFAULT_LOG_DIR / f"{date_tag}.jsonl"
+
+
+def resolve_daily_log_path() -> Path:
+    return _get_log_path_for_date(datetime.now(timezone.utc).date())
 
 
 def log_action(record: dict[str, Any], *, job_id: str | None = None) -> None:
