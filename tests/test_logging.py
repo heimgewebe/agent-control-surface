@@ -1,6 +1,11 @@
 import pytest
 from pathlib import Path
-from panel.logging import redact_secrets, _get_sensitive_env_values, resolve_action_log_config
+from panel.logging import (
+    redact_secrets,
+    _get_sensitive_env_values,
+    resolve_action_log_config,
+    ActionLogConfig
+)
 
 @pytest.fixture(autouse=True)
 def clear_env_cache():
@@ -13,30 +18,40 @@ def clear_env_cache():
 def test_resolve_action_log_config(monkeypatch):
     # Test disabled (default)
     monkeypatch.delenv("ACS_ACTION_LOG", raising=False)
-    config = resolve_action_log_config()
-    assert config.enabled is False
-    assert config.path is None
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config() == ActionLogConfig(enabled=False, path=None)
 
     # Test disabled explicitly
-    monkeypatch.setenv("ACS_ACTION_LOG", "false")
-    resolve_action_log_config.cache_clear() # manually clear to pick up change
-    config = resolve_action_log_config()
-    assert config.enabled is False
+    for val in ["0", "false", "no", "off"]:
+        monkeypatch.setenv("ACS_ACTION_LOG", val)
+        resolve_action_log_config.cache_clear()
+        assert resolve_action_log_config() == ActionLogConfig(enabled=False, path=None)
 
     # Test enabled with boolean
-    monkeypatch.setenv("ACS_ACTION_LOG", "true")
-    resolve_action_log_config.cache_clear()
-    config = resolve_action_log_config()
-    assert config.enabled is True
-    assert config.path is None
+    for val in ["1", "true", "yes", "on"]:
+        monkeypatch.setenv("ACS_ACTION_LOG", val)
+        resolve_action_log_config.cache_clear()
+        assert resolve_action_log_config() == ActionLogConfig(enabled=True, path=None)
 
     # Test enabled with path
     path_val = "/tmp/my_log_path.jsonl"
     monkeypatch.setenv("ACS_ACTION_LOG", path_val)
     resolve_action_log_config.cache_clear()
-    config = resolve_action_log_config()
-    assert config.enabled is True
-    assert config.path == Path(path_val)
+    assert resolve_action_log_config() == ActionLogConfig(enabled=True, path=Path(path_val))
+
+def test_resolve_action_log_config_caching(monkeypatch):
+    # Enable initially
+    monkeypatch.setenv("ACS_ACTION_LOG", "true")
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config().enabled is True
+
+    # Change env but don't clear cache -> should remain True
+    monkeypatch.setenv("ACS_ACTION_LOG", "false")
+    assert resolve_action_log_config().enabled is True
+
+    # Clear cache -> should reflect new env
+    resolve_action_log_config.cache_clear()
+    assert resolve_action_log_config().enabled is False
 
 def test_redact_secrets(monkeypatch):
     # Test env var redaction using monkeypatch
