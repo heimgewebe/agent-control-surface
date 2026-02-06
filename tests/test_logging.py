@@ -1,11 +1,42 @@
 import pytest
-from panel.logging import redact_secrets, _get_sensitive_env_values
+from pathlib import Path
+from panel.logging import redact_secrets, _get_sensitive_env_values, resolve_action_log_config
 
 @pytest.fixture(autouse=True)
 def clear_env_cache():
     _get_sensitive_env_values.cache_clear()
+    resolve_action_log_config.cache_clear()
     yield
     _get_sensitive_env_values.cache_clear()
+    resolve_action_log_config.cache_clear()
+
+def test_resolve_action_log_config(monkeypatch):
+    # Test disabled (default)
+    monkeypatch.delenv("ACS_ACTION_LOG", raising=False)
+    config = resolve_action_log_config()
+    assert config.enabled is False
+    assert config.path is None
+
+    # Test disabled explicitly
+    monkeypatch.setenv("ACS_ACTION_LOG", "false")
+    resolve_action_log_config.cache_clear() # manually clear to pick up change
+    config = resolve_action_log_config()
+    assert config.enabled is False
+
+    # Test enabled with boolean
+    monkeypatch.setenv("ACS_ACTION_LOG", "true")
+    resolve_action_log_config.cache_clear()
+    config = resolve_action_log_config()
+    assert config.enabled is True
+    assert config.path is None
+
+    # Test enabled with path
+    path_val = "/tmp/my_log_path.jsonl"
+    monkeypatch.setenv("ACS_ACTION_LOG", path_val)
+    resolve_action_log_config.cache_clear()
+    config = resolve_action_log_config()
+    assert config.enabled is True
+    assert config.path == Path(path_val)
 
 def test_redact_secrets(monkeypatch):
     # Test env var redaction using monkeypatch

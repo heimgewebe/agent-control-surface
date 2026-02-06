@@ -30,6 +30,7 @@ class ActionLogConfig:
     path: Path | None
 
 
+@lru_cache(maxsize=1)
 def resolve_action_log_config() -> ActionLogConfig:
     env_value = os.getenv("ACS_ACTION_LOG", "").strip()
     if not env_value:
