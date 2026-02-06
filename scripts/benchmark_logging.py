@@ -11,6 +11,7 @@ from panel.logging import (
     resolve_daily_log_path,
 )
 
+
 def run_benchmark():
     # Setup Environment
     os.environ["ACS_ACTION_LOG"] = "true"
@@ -44,7 +45,6 @@ def run_benchmark():
     print(f"Current (Cached):  {t_config_current:.4f} s")
     if t_config_current > 0:
         print(f"Speedup:           {t_config_legacy / t_config_current:.2f}x")
-
 
     # --- 2. Daily Log Path Resolution ---
 
