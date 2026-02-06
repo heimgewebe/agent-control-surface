@@ -118,3 +118,36 @@ def test_redact_secrets_deduplication(monkeypatch):
     text = "value=same_secret"
     redacted = redact_secrets(text)
     assert redacted == "value=[redacted]"
+
+
+def test_resolve_daily_log_path_updates_on_date_change(monkeypatch):
+    from datetime import datetime, timezone
+    from panel.logging import resolve_daily_log_path, DEFAULT_LOG_DIR, _get_log_path_for_date
+
+    # Define mock datetime
+    class MockDateTime(datetime):
+        _now = datetime(2023, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        @classmethod
+        def now(cls, tz=None):
+            return cls._now
+
+    # Apply mock
+    monkeypatch.setattr("panel.logging.datetime", MockDateTime)
+
+    # Clear cache
+    _get_log_path_for_date.cache_clear()
+
+    # Check first date
+    path1 = resolve_daily_log_path()
+    assert path1 == DEFAULT_LOG_DIR / "2023-10-01.jsonl"
+
+    # Move time forward same day -> should be same path
+    MockDateTime._now = datetime(2023, 10, 1, 23, 59, 59, tzinfo=timezone.utc)
+    path2 = resolve_daily_log_path()
+    assert path2 == path1
+
+    # Move date forward -> should be new path
+    MockDateTime._now = datetime(2023, 10, 2, 0, 0, 1, tzinfo=timezone.utc)
+    path3 = resolve_daily_log_path()
+    assert path3 == DEFAULT_LOG_DIR / "2023-10-02.jsonl"
+    assert path3 != path1
