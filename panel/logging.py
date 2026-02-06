@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -54,23 +55,67 @@ def resolve_daily_log_path() -> Path:
     return _get_log_path_for_date(datetime.now(timezone.utc).date())
 
 
+class FileLogger:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._current_path: Path | None = None
+        self._file_handle: Any = None
+
+    def log(self, payload: dict[str, Any], path: Path) -> None:
+        with self._lock:
+            if path != self._current_path:
+                self._rotate(path)
+
+            if self._file_handle:
+                try:
+                    self._write(payload)
+                except OSError:
+                    # Try to recover once
+                    try:
+                        self._rotate(path)
+                        if self._file_handle:
+                            self._write(payload)
+                    except OSError:
+                        pass
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        self._file_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self._file_handle.flush()
+
+    def _rotate(self, new_path: Path) -> None:
+        if self._file_handle:
+            try:
+                self._file_handle.close()
+            except OSError:
+                pass
+            self._file_handle = None
+
+        self._current_path = new_path
+        try:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            self._file_handle = new_path.open("a", encoding="utf-8")
+        except OSError:
+            self._file_handle = None
+            self._current_path = None  # Reset so we try again next time
+
+
+_LOGGER = FileLogger()
+
+
 def log_action(record: dict[str, Any], *, job_id: str | None = None) -> None:
     config = resolve_action_log_config()
     if not config.enabled:
         return
     log_path = config.path or resolve_daily_log_path()
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            **redact_record(record),
-        }
-        if job_id:
-            payload["job_id"] = job_id
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        return
+
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **redact_record(record),
+    }
+    if job_id:
+        payload["job_id"] = job_id
+
+    _LOGGER.log(payload, log_path)
 
 
 def redact_record(value: Any) -> Any:
