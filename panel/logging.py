@@ -4,7 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -44,7 +44,7 @@ def resolve_action_log_config() -> ActionLogConfig:
 
 
 @lru_cache(maxsize=1)
-def _get_log_path_for_date(date_obj) -> Path:
+def _get_log_path_for_date(date_obj: date) -> Path:
     date_tag = date_obj.strftime("%Y-%m-%d")
     return DEFAULT_LOG_DIR / f"{date_tag}.jsonl"
 

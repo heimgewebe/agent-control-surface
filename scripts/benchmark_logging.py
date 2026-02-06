@@ -1,7 +1,6 @@
 
 import timeit
 import os
-import re
 from pathlib import Path
 from datetime import datetime, timezone
 from panel.logging import (
@@ -37,8 +36,8 @@ def resolve_action_log_config_legacy() -> ActionLogConfig:
     return ActionLogConfig(enabled=True, path=Path(env_value).expanduser())
 
 print("--- resolve_action_log_config (100,000 runs) ---")
-t_config_legacy = timeit.timeit(lambda: resolve_action_log_config_legacy(), number=100000)
-t_config_current = timeit.timeit(lambda: resolve_action_log_config(), number=100000)
+t_config_legacy = timeit.timeit(resolve_action_log_config_legacy, number=100000)
+t_config_current = timeit.timeit(resolve_action_log_config, number=100000)
 
 print(f"Legacy (Uncached): {t_config_legacy:.4f} s")
 print(f"Current (Cached):  {t_config_current:.4f} s")
@@ -53,8 +52,8 @@ def resolve_daily_log_path_legacy() -> Path:
     return DEFAULT_LOG_DIR / f"{date_tag}.jsonl"
 
 print("\n--- resolve_daily_log_path (100,000 runs) ---")
-t_daily_legacy = timeit.timeit(lambda: resolve_daily_log_path_legacy(), number=100000)
-t_daily_current = timeit.timeit(lambda: resolve_daily_log_path(), number=100000)
+t_daily_legacy = timeit.timeit(resolve_daily_log_path_legacy, number=100000)
+t_daily_current = timeit.timeit(resolve_daily_log_path, number=100000)
 
 print(f"Legacy (Uncached): {t_daily_legacy:.4f} s")
 print(f"Current (Cached):  {t_daily_current:.4f} s")
