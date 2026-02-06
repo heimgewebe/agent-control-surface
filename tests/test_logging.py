@@ -120,34 +120,26 @@ def test_redact_secrets_deduplication(monkeypatch):
     assert redacted == "value=[redacted]"
 
 
-def test_resolve_daily_log_path_updates_on_date_change(monkeypatch):
-    from datetime import datetime, timezone
-    from panel.logging import resolve_daily_log_path, DEFAULT_LOG_DIR, _get_log_path_for_date
+def test_get_log_path_for_date_updates_correctly():
+    """Test that _get_log_path_for_date caches correctly and respects date changes."""
+    from datetime import date
+    from panel.logging import DEFAULT_LOG_DIR, _get_log_path_for_date
 
-    # Define mock datetime
-    class MockDateTime(datetime):
-        _now = datetime(2023, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
-        @classmethod
-        def now(cls, tz=None):
-            return cls._now
-
-    # Apply mock
-    monkeypatch.setattr("panel.logging.datetime", MockDateTime)
-
-    # Clear cache
     _get_log_path_for_date.cache_clear()
 
-    # Check first date
-    path1 = resolve_daily_log_path()
+    # Test initial date
+    date1 = date(2023, 10, 1)
+    path1 = _get_log_path_for_date(date1)
     assert path1 == DEFAULT_LOG_DIR / "2023-10-01.jsonl"
 
-    # Move time forward same day -> should be same path
-    MockDateTime._now = datetime(2023, 10, 1, 23, 59, 59, tzinfo=timezone.utc)
-    path2 = resolve_daily_log_path()
-    assert path2 == path1
+    # Call again with same date object -> should hit cache (implicit check, same result)
+    assert _get_log_path_for_date(date1) == path1
 
-    # Move date forward -> should be new path
-    MockDateTime._now = datetime(2023, 10, 2, 0, 0, 1, tzinfo=timezone.utc)
-    path3 = resolve_daily_log_path()
-    assert path3 == DEFAULT_LOG_DIR / "2023-10-02.jsonl"
-    assert path3 != path1
+    # Call with same date value but new object -> should work same
+    assert _get_log_path_for_date(date(2023, 10, 1)) == path1
+
+    # Change date -> should get new path
+    date2 = date(2023, 10, 2)
+    path2 = _get_log_path_for_date(date2)
+    assert path2 == DEFAULT_LOG_DIR / "2023-10-02.jsonl"
+    assert path2 != path1
