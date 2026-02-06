@@ -4,7 +4,7 @@ from panel.logging import (
     redact_secrets,
     _get_sensitive_env_values,
     resolve_action_log_config,
-    ActionLogConfig
+    ActionLogConfig,
 )
 
 @pytest.fixture(autouse=True)
@@ -14,6 +14,7 @@ def clear_env_cache():
     yield
     _get_sensitive_env_values.cache_clear()
     resolve_action_log_config.cache_clear()
+
 
 def test_resolve_action_log_config(monkeypatch):
     # Test disabled (default)
@@ -39,6 +40,7 @@ def test_resolve_action_log_config(monkeypatch):
     resolve_action_log_config.cache_clear()
     assert resolve_action_log_config() == ActionLogConfig(enabled=True, path=Path(path_val))
 
+
 def test_resolve_action_log_config_caching(monkeypatch):
     # Enable initially
     monkeypatch.setenv("ACS_ACTION_LOG", "true")
@@ -52,6 +54,7 @@ def test_resolve_action_log_config_caching(monkeypatch):
     # Clear cache -> should reflect new env
     resolve_action_log_config.cache_clear()
     assert resolve_action_log_config().enabled is False
+
 
 def test_redact_secrets(monkeypatch):
     # Test env var redaction using monkeypatch
@@ -80,6 +83,7 @@ def test_redact_secrets(monkeypatch):
     assert "token=[redacted]" in redacted
     assert "key=[redacted]" in redacted
 
+
 def test_redact_secrets_substring_overlap(monkeypatch):
     # Test that longer secrets are redacted before shorter ones to prevent partial leaks
     # GH_TOKEN="abc"
@@ -104,6 +108,7 @@ def test_redact_secrets_substring_overlap(monkeypatch):
     # "abc" -> "[redacted]" (1 replacement)
     # expected: "Here is the long secret: [redacted] and the short one: [redacted]"
     assert redacted.count("[redacted]") == 2
+
 
 def test_redact_secrets_deduplication(monkeypatch):
     # Ensure duplication doesn't cause issues
