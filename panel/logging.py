@@ -62,24 +62,30 @@ class FileLogger:
         self._file_handle: Any = None
 
     def log(self, payload: dict[str, Any], path: Path) -> None:
+        try:
+            line = json.dumps(payload, ensure_ascii=False) + "\n"
+        except (TypeError, ValueError):
+            return  # Best-effort: ignore serialization errors
+
         with self._lock:
             if path != self._current_path:
                 self._rotate(path)
 
             if self._file_handle:
                 try:
-                    self._write(payload)
+                    self._write(line)
                 except OSError:
                     # Try to recover once
                     try:
                         self._rotate(path)
                         if self._file_handle:
-                            self._write(payload)
+                            self._write(line)
                     except OSError:
+                        # Logging is best-effort; ignore if retry fails.
                         pass
 
-    def _write(self, payload: dict[str, Any]) -> None:
-        self._file_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    def _write(self, line: str) -> None:
+        self._file_handle.write(line)
         self._file_handle.flush()
 
     def _rotate(self, new_path: Path) -> None:
@@ -87,6 +93,7 @@ class FileLogger:
             try:
                 self._file_handle.close()
             except OSError:
+                # Ignore close errors; handle is reset and reopened later.
                 pass
             self._file_handle = None
 
