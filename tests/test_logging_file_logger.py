@@ -1,7 +1,7 @@
 import json
-import pytest
 from pathlib import Path
 from panel.logging import FileLogger
+
 
 def test_file_logger_append(tmp_path):
     """Test that multiple writes append correctly to the file."""
@@ -17,6 +17,7 @@ def test_file_logger_append(tmp_path):
     assert json.loads(lines[0]) == {"a": 1}
     assert json.loads(lines[1]) == {"b": 2}
 
+
 def test_file_logger_rotation(tmp_path):
     """Test that rotation occurs when path changes."""
     logger = FileLogger()
@@ -31,6 +32,7 @@ def test_file_logger_rotation(tmp_path):
     # Verify contents
     assert json.loads(path1.read_text(encoding="utf-8").strip()) == {"msg": "file1"}
     assert json.loads(path2.read_text(encoding="utf-8").strip()) == {"msg": "file2"}
+
 
 def test_file_logger_retry_on_oserror(tmp_path, monkeypatch):
     """Test that retry logic works when OSError occurs once during write."""
@@ -63,6 +65,7 @@ def test_file_logger_retry_on_oserror(tmp_path, monkeypatch):
     assert len(lines) == 2
     assert json.loads(lines[1]) == {"retry": True}
 
+
 def test_file_logger_serialization_error():
     """Test that serialization errors are ignored (best-effort)."""
     logger = FileLogger()
@@ -70,7 +73,5 @@ def test_file_logger_serialization_error():
     class Unserializable:
         pass
 
-    try:
-        logger.log({"obj": Unserializable()}, Path("dummy"))
-    except Exception as e:
-        pytest.fail(f"Logger raised exception on serialization error: {e}")
+    # Should not raise exception
+    logger.log({"obj": Unserializable()}, Path("dummy"))
