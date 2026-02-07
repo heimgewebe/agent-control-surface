@@ -3,6 +3,7 @@ from pathlib import Path
 from panel.logging import (
     redact_secrets,
     _get_sensitive_env_values,
+    _get_sensitive_pattern,
     resolve_action_log_config,
     ActionLogConfig,
 )
@@ -10,9 +11,11 @@ from panel.logging import (
 @pytest.fixture(autouse=True)
 def clear_env_cache():
     _get_sensitive_env_values.cache_clear()
+    _get_sensitive_pattern.cache_clear()
     resolve_action_log_config.cache_clear()
     yield
     _get_sensitive_env_values.cache_clear()
+    _get_sensitive_pattern.cache_clear()
     resolve_action_log_config.cache_clear()
 
 
