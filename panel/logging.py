@@ -149,7 +149,6 @@ def _get_sensitive_env_values() -> tuple[str, ...]:
     return tuple(unique_values)
 
 
-@lru_cache(maxsize=1)
 def _get_sensitive_pattern() -> re.Pattern | None:
     values = _get_sensitive_env_values()
     if not values:
