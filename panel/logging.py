@@ -154,6 +154,8 @@ def _get_sensitive_pattern() -> re.Pattern | None:
     if not values:
         return None
     # Escape values to treat them as literal strings in regex, then join with |
+    # Sort by length descending (longest-first) to prevent partial matches
+    values = sorted(values, key=len, reverse=True)
     pattern_str = "|".join(map(re.escape, values))
     return re.compile(pattern_str)
 
