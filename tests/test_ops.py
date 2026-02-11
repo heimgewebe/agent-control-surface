@@ -93,10 +93,10 @@ def mock_run_wgx(monkeypatch):
                      out_dir.mkdir(parents=True, exist_ok=True)
 
                      filename = f"audit.git.v1.{cid}.json"
-                     (out_dir / filename).write_text(MOCK_AUDIT_JSON)
+                     (out_dir / filename).write_text(MOCK_AUDIT_JSON, encoding="utf-8")
 
                      # Return path relative to repo (cwd)
-                     return CmdResult(0, f".wgx/out/{filename}", "", cmd)
+                     return CmdResult(0, str(Path(".wgx") / "out" / filename), "", cmd)
              elif repo == "fail_repo":
                  return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
              elif repo == "metarepo": # For API tests using metarepo
@@ -120,7 +120,8 @@ def mock_run_wgx(monkeypatch):
 
 def test_run_wgx_audit_git(mock_run_wgx, tmp_path):
     # Tests file mode (default behavior)
-    repo_path = tmp_path
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
     result = run_wgx_audit_git("mock_repo", repo_path, "corr-1") # Defaults to stdout_json=False
 
     assert isinstance(result, AuditGit)
