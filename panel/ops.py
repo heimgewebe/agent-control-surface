@@ -307,9 +307,13 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
     try:
         with os.scandir(out_dir) as it:
             for entry in it:
-                if entry.name.startswith("audit.git.v1") and entry.name.endswith(".json") and entry.is_file():
-                    candidates.append(entry)
-    except OSError:
+                if entry.name.startswith("audit.git.v1") and entry.name.endswith(".json"):
+                    try:
+                        if entry.is_file():
+                            candidates.append(entry)
+                    except OSError:
+                        continue
+    except (FileNotFoundError, NotADirectoryError):
         return None
 
     if not candidates:
