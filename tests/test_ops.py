@@ -76,7 +76,27 @@ def mock_run_wgx(monkeypatch):
              repo = cmd[repo_idx]
 
              if repo == "mock_repo":
-                 return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+                 if "--stdout-json" in cmd:
+                     return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+                 else:
+                     # File mode (default)
+                     # Determine correlation ID
+                     try:
+                         cid_idx = cmd.index("--correlation-id") + 1
+                         cid = cmd[cid_idx]
+                     except (ValueError, IndexError):
+                         cid = "unknown"
+
+                     # Write to file
+                     cwd_path = Path(cwd)
+                     out_dir = cwd_path / ".wgx" / "out"
+                     out_dir.mkdir(parents=True, exist_ok=True)
+
+                     filename = f"audit.git.v1.{cid}.json"
+                     (out_dir / filename).write_text(MOCK_AUDIT_JSON)
+
+                     # Return path relative to repo (cwd)
+                     return CmdResult(0, f".wgx/out/{filename}", "", cmd)
              elif repo == "fail_repo":
                  return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
              elif repo == "metarepo": # For API tests using metarepo
@@ -98,19 +118,15 @@ def mock_run_wgx(monkeypatch):
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-def test_run_wgx_audit_git(mock_run_wgx):
-    # Tests stdout-json mode (default mock runner behavior above covers this for 'mock_repo' if we allow stdout_json parsing)
-    # But run_wgx_audit_git defaults stdout_json=False.
-    # So we need to ensure either we pass stdout_json=True, or fix mock to return a file path.
-    # Let's test explicit stdout_json=True here.
-    repo_path = Path("/tmp/mock_repo")
-    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
+def test_run_wgx_audit_git(mock_run_wgx, tmp_path):
+    # Tests file mode (default behavior)
+    repo_path = tmp_path
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1") # Defaults to stdout_json=False
 
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
     assert result.status == "ok"
-    # assert result.correlation_id == "test-correlation-id" # Taken from JSON
-    assert result.correlation_id == "corr-1" # Override check
+    assert result.correlation_id == "corr-1"
 
 def test_run_wgx_audit_git_nonzero_exit_with_json(mock_run_wgx):
     repo_path = Path("/tmp/fail_repo")
