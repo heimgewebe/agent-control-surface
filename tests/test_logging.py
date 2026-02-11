@@ -143,3 +143,26 @@ def test_get_log_path_for_date_updates_correctly():
     path2 = _get_log_path_for_date(date2)
     assert path2 == DEFAULT_LOG_DIR / "2023-10-02.jsonl"
     assert path2 != path1
+
+
+def test_redact_secrets_cache_invalidation(monkeypatch):
+    """
+    Regression test: Ensure that updating environment variables and clearing
+    the values cache is sufficient to update the redaction logic (i.e. pattern isn't stale).
+    """
+    # 1. Set initial secret
+    monkeypatch.setenv("GH_TOKEN", "old_secret_value")
+    # Force clear to pick up change (fixture does this, but being explicit helps readability)
+    _get_sensitive_env_values.cache_clear()
+
+    assert redact_secrets("This has old_secret_value") == "This has [redacted]"
+
+    # 2. Change secret
+    monkeypatch.setenv("GH_TOKEN", "new_secret_value")
+
+    # 3. Clear ONLY the values cache (simulating what other parts of the system might do)
+    _get_sensitive_env_values.cache_clear()
+
+    # 4. Verify new secret is redacted
+    # If _get_sensitive_pattern was still cached with "old_secret_value", this would fail.
+    assert redact_secrets("This has new_secret_value") == "This has [redacted]"

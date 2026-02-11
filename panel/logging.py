@@ -149,10 +149,25 @@ def _get_sensitive_env_values() -> tuple[str, ...]:
     return tuple(unique_values)
 
 
+def _get_sensitive_pattern() -> re.Pattern | None:
+    values = _get_sensitive_env_values()
+    if not values:
+        return None
+    # Escape values to treat them as literal strings in regex, then join with |
+    # Sort by length descending (longest-first) to prevent partial matches
+    values = sorted(values, key=len, reverse=True)
+    pattern_str = "|".join(map(re.escape, values))
+    return re.compile(pattern_str)
+
+
 def redact_secrets(text: str) -> str:
     redacted = text
-    for env_value in _get_sensitive_env_values():
-        redacted = redacted.replace(env_value, "[redacted]")
+    # 1. Redact known sensitive environment values (single pass)
+    sensitive_pattern = _get_sensitive_pattern()
+    if sensitive_pattern:
+        redacted = sensitive_pattern.sub("[redacted]", redacted)
+
+    # 2. Redact heuristic patterns
     redacted = GHP_PATTERN.sub("[redacted]", redacted)
     redacted = GITHUB_PAT_PATTERN.sub("[redacted]", redacted)
     redacted = TOKEN_PATTERN.sub(r"\1=[redacted]", redacted)
