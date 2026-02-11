@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -302,12 +303,31 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
     if not out_dir.exists():
         return None
 
-    candidates = list(out_dir.glob("audit.git.v1*.json"))
+    candidates = []
+    try:
+        with os.scandir(out_dir) as it:
+            for entry in it:
+                if entry.name.startswith("audit.git.v1") and entry.name.endswith(".json"):
+                    try:
+                        if entry.is_file():
+                            candidates.append(entry)
+                    except OSError:
+                        continue
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
     if not candidates:
         return None
 
     # Sort by modification time descending
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # Use cached stat from DirEntry; handle potential race condition if file deleted
+    def safe_mtime(entry: os.DirEntry[str]) -> float:
+        try:
+            return entry.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates.sort(key=safe_mtime, reverse=True)
 
     generic_name = "audit.git.v1.json"
     specific = [c for c in candidates if c.name != generic_name]
@@ -316,7 +336,7 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
     # Check specifics first
     for cand in specific:
         try:
-            with open(cand, "r", encoding="utf-8") as f:
+            with open(cand.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if repo_key and data.get("repo") != repo_key:
                     continue
@@ -327,7 +347,7 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
     # Then generic
     for cand in generic:
         try:
-            with open(cand, "r", encoding="utf-8") as f:
+            with open(cand.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if repo_key and data.get("repo") != repo_key:
                     continue
