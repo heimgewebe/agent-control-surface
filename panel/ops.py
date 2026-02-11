@@ -321,7 +321,7 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
 
     # Sort by modification time descending
     # Use cached stat from DirEntry; handle potential race condition if file deleted
-    def safe_mtime(entry):
+    def safe_mtime(entry: os.DirEntry[str]) -> float:
         try:
             return entry.stat().st_mtime
         except OSError:
