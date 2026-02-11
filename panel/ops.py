@@ -30,6 +30,7 @@ def create_token(data: dict[str, Any]) -> str:
     now = time.time()
     with TOKEN_LOCK:
         # Cleanup expired
+        # Note: We perform a full scan to ensure correctness regardless of insertion order
         expired = [k for k, v in TOKEN_STORE.items() if now - v["created_at"] > TOKEN_TTL_SECONDS]
         for k in expired:
             del TOKEN_STORE[k]
