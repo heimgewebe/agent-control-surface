@@ -267,7 +267,8 @@ def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, mock_run_wgx
 
 def test_get_latest_audit_artifact(tmp_path):
     # Setup .wgx/out structure
-    out_dir = tmp_path / ".wgx" / "out"
+    repo_path = _mk_repo(tmp_path, "repo")
+    out_dir = repo_path / ".wgx" / "out"
     out_dir.mkdir(parents=True)
 
     # Old file
@@ -284,7 +285,7 @@ def test_get_latest_audit_artifact(tmp_path):
     data["status"] = "warn"
     new.write_text(json.dumps(data), encoding="utf-8")
 
-    result = get_latest_audit_artifact(tmp_path)
+    result = get_latest_audit_artifact(repo_path)
     assert result is not None
     assert result.status == "warn" # Should pick the new one
 
