@@ -59,9 +59,9 @@ MOCK_RESULT_JSON = json.dumps({
     "stdout": "Fixed."
 })
 
-def _mk_repo(tmp_path, name):
+def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
     p = tmp_path / name
-    p.mkdir()
+    p.mkdir(parents=True, exist_ok=True)
     return p
 
 @pytest.fixture(autouse=True)
