@@ -409,7 +409,7 @@ def run_wgx_routine_preview(
         cmd=cmd,
         cwd=repo_path,
         timeout=60,
-        fallback_paths=[repo_path / ".wgx/out/routine.preview.json"],
+        fallback_paths=[repo_path / ".wgx" / "out" / "routine.preview.json"],
     )
 
     if isinstance(preview_data, dict):
@@ -444,7 +444,7 @@ def run_wgx_routine_apply(
         cmd=cmd,
         cwd=repo_path,
         timeout=300,
-        fallback_paths=[repo_path / ".wgx/out/routine.result.json"],
+        fallback_paths=[repo_path / ".wgx" / "out" / "routine.result.json"],
     )
 
     if isinstance(result_data, dict):
