@@ -244,6 +244,8 @@ def _run_wgx_command(
     fallback_paths: list[Path] | None = None,
     try_stdout_json: bool = True,
     try_stdout_path: bool = True,
+    allow_fallback_on_nonzero: bool = True,
+    strict_fallback: bool = False,
 ) -> tuple[Any, int, str]:
     """
     Common wrapper for executing wgx commands and parsing their JSON output.
@@ -270,7 +272,10 @@ def _run_wgx_command(
             except (OSError, json.JSONDecodeError):
                 pass
 
-    if data is None and fallback_paths:
+    # Fallback to files only if allowed (e.g. not stale preview on failure)
+    should_try_fallback = fallback_paths and (allow_fallback_on_nonzero or res.code == 0)
+
+    if data is None and should_try_fallback:
         for p in fallback_paths:
             if p.exists():
                 try:
@@ -279,6 +284,10 @@ def _run_wgx_command(
                         if data is not None:
                             break
                 except (OSError, json.JSONDecodeError):
+                    if strict_fallback:
+                        raise RuntimeError(
+                            f"Preferred artifact found at {p} but could not be parsed. {details}"
+                        )
                     continue
 
     if data is not None:
@@ -316,6 +325,7 @@ def run_wgx_audit_git(
         fallback_paths=None if stdout_json else fallback_paths,
         try_stdout_json=stdout_json,
         try_stdout_path=not stdout_json,
+        strict_fallback=True,
     )
 
     # Validate with Pydantic
@@ -410,6 +420,7 @@ def run_wgx_routine_preview(
         cwd=repo_path,
         timeout=60,
         fallback_paths=[repo_path / ".wgx" / "out" / "routine.preview.json"],
+        allow_fallback_on_nonzero=False,
     )
 
     # Calculate canonical hash of the preview content (before metadata injection)
@@ -445,6 +456,7 @@ def run_wgx_routine_apply(
         cwd=repo_path,
         timeout=300,
         fallback_paths=[repo_path / ".wgx" / "out" / "routine.result.json"],
+        allow_fallback_on_nonzero=False,
     )
 
     if isinstance(result_data, dict):

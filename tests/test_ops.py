@@ -792,3 +792,53 @@ def test_run_wgx_command_diagnostics_unit(monkeypatch, tmp_path):
     assert "stdout=" in msg and "stderr=" in msg
     assert "output line 1\\noutput line 2" in msg
     assert "error line 1\\nerror line 2" in msg
+
+def test_run_wgx_routine_preview_no_stale_fallback_unit(monkeypatch, tmp_path):
+    """Test that routine preview does NOT read stale fallback file if exit code is non-zero."""
+    from panel.ops import run_wgx_routine_preview
+    repo_path = _mk_repo(tmp_path)
+
+    # Create a stale preview file
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    stale_file = out_dir / "routine.preview.json"
+    stale_file.write_text(json.dumps({"kind": "stale"}), encoding="utf-8")
+
+    # Mock failure without stdout output
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(1, "failure", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_routine_preview("repo", repo_path, "test")
+    assert "no JSON output found" in str(excinfo.value)
+    assert "kind\": \"stale" not in str(excinfo.value)
+
+def test_run_wgx_audit_git_strict_fallback_unit(monkeypatch, tmp_path):
+    """Test that audit fails if preferred artifact is corrupt, instead of falling back."""
+    from panel.ops import run_wgx_audit_git
+    repo_path = _mk_repo(tmp_path)
+    corr_id = "corr-123"
+
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+
+    # Corrupt preferred artifact
+    pref = out_dir / f"audit.git.v1.{corr_id}.json"
+    pref.write_text("invalid json {", encoding="utf-8")
+
+    # Valid generic fallback
+    generic = out_dir / "audit.git.v1.json"
+    generic.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
+
+    # Mock run - no stdout output
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(0, "ok", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_audit_git("repo", repo_path, corr_id)
+    assert "Preferred artifact found" in str(excinfo.value)
+    assert str(pref) in str(excinfo.value)
