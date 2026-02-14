@@ -270,13 +270,18 @@ def _run_wgx_command(
                 with open(path_candidate, encoding="utf-8") as f:
                     data = json.load(f)
             except (OSError, json.JSONDecodeError):
+                if res.code != 0:
+                    raise RuntimeError(
+                        f"Command failed (code {res.code}) and artifact path returned in stdout "
+                        f"({path_candidate}) could not be parsed. {details}"
+                    )
                 pass
 
     # Fallback to files only if allowed (e.g. not stale preview on failure)
     should_try_fallback = fallback_paths and (allow_fallback_on_nonzero or res.code == 0)
 
     if data is None and should_try_fallback:
-        for p in fallback_paths:
+        for i, p in enumerate(fallback_paths):
             if p.exists():
                 try:
                     with open(p, encoding="utf-8") as f:
@@ -285,8 +290,9 @@ def _run_wgx_command(
                             break
                 except (OSError, json.JSONDecodeError):
                     if strict_fallback:
+                        label = "Preferred artifact" if i == 0 else "Artifact"
                         raise RuntimeError(
-                            f"Preferred artifact found at {p} but could not be parsed. {details}"
+                            f"{label} found at {p} but could not be parsed. {details}"
                         )
                     continue
 

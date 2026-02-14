@@ -842,3 +842,57 @@ def test_run_wgx_audit_git_strict_fallback_unit(monkeypatch, tmp_path):
         run_wgx_audit_git("repo", repo_path, corr_id)
     assert "Preferred artifact found" in str(excinfo.value)
     assert str(pref) in str(excinfo.value)
+
+def test_run_wgx_audit_git_strict_fallback_generic_unit(monkeypatch, tmp_path):
+    """
+    Test that audit fails with generic error if generic artifact is corrupt
+    (and preferred is missing).
+    """
+    from panel.ops import run_wgx_audit_git
+    repo_path = _mk_repo(tmp_path)
+    corr_id = "corr-missing"
+
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+
+    # Preferred artifact does NOT exist
+    # Corrupt generic fallback
+    generic = out_dir / "audit.git.v1.json"
+    generic.write_text("corrupt generic", encoding="utf-8")
+
+    # Mock run - no stdout output
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(0, "ok", "", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_audit_git("repo", repo_path, corr_id)
+    # Should NOT contain "Preferred", but should mention the generic file
+    assert "Artifact found" in str(excinfo.value)
+    assert "Preferred" not in str(excinfo.value)
+    assert str(generic) in str(excinfo.value)
+
+def test_run_wgx_routine_apply_corrupt_stdout_path_unit(monkeypatch, tmp_path):
+    """Test that routine apply fails fast if the path returned in stdout is corrupt on failure."""
+    from panel.ops import create_token, run_wgx_routine_apply
+    repo_path = _mk_repo(tmp_path)
+
+    out_dir = repo_path / ".wgx" / "out"
+    out_dir.mkdir(parents=True)
+    corrupt_file = out_dir / "bad_apply.json"
+    corrupt_file.write_text("corrupt", encoding="utf-8")
+
+    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
+
+    # Mock failure and return the path in stdout
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(1, str(corrupt_file), "stderr logs", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
+    assert "artifact path returned in stdout" in str(excinfo.value)
+    assert str(corrupt_file) in str(excinfo.value)
+    assert "stderr logs" in str(excinfo.value)
