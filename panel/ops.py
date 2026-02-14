@@ -314,7 +314,7 @@ def run_wgx_audit_git(
         cwd=repo_path,
         timeout=60,
         fallback_paths=None if stdout_json else fallback_paths,
-        try_stdout_json=True,
+        try_stdout_json=stdout_json,
         try_stdout_path=not stdout_json,
     )
 
