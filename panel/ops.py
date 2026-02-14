@@ -40,7 +40,9 @@ def create_token(data: dict[str, Any]) -> str:
     return token
 
 
-def validate_and_consume_token(token: str, repo_key: str, routine_id: str, preview_hash: str | None = None) -> bool:
+def validate_and_consume_token(
+    token: str, repo_key: str, routine_id: str, preview_hash: str | None = None
+) -> bool:
     now = time.time()
     with TOKEN_LOCK:
         if token not in TOKEN_STORE:
@@ -249,8 +251,11 @@ def _run_wgx_command(
     """
     res = run(cmd, cwd=cwd, timeout=timeout)
     output = res.stdout.strip()
-    # Redact secrets in diagnostic output
-    details = redact_secrets(res.stderr or output[:200])
+
+    # Create rich diagnostic details from both streams
+    stdout_snip = output[:200].replace("\n", "\\n")
+    stderr_snip = (res.stderr or "").strip().replace("\n", "\\n")[:200]
+    details = redact_secrets(f"stdout='{stdout_snip}' stderr='{stderr_snip}'")
 
     data = None
     if try_stdout_json:
@@ -262,7 +267,7 @@ def _run_wgx_command(
             try:
                 with open(path_candidate, encoding="utf-8") as f:
                     data = json.load(f)
-            except Exception:
+            except (OSError, json.JSONDecodeError):
                 pass
 
     if data is None and fallback_paths:
@@ -273,7 +278,7 @@ def _run_wgx_command(
                         data = json.load(f)
                         if data is not None:
                             break
-                except Exception:
+                except (OSError, json.JSONDecodeError):
                     continue
 
     if data is not None:
@@ -285,7 +290,7 @@ def _run_wgx_command(
             f"WGX command failed (code {res.code}) and no JSON output found: {details}"
         )
 
-    raise RuntimeError(f"Could not locate valid JSON output from wgx. Stdout: {output[:200]}")
+    raise RuntimeError(f"Could not locate valid JSON output from wgx. {details}")
 
 
 def run_wgx_audit_git(
@@ -309,8 +314,8 @@ def run_wgx_audit_git(
         cwd=repo_path,
         timeout=60,
         fallback_paths=None if stdout_json else fallback_paths,
-        try_stdout_json=stdout_json,
-        try_stdout_path=not stdout_json,
+        try_stdout_json=True,
+        try_stdout_path=True,
     )
 
     # Validate with Pydantic
@@ -390,7 +395,9 @@ def get_latest_audit_artifact(repo_path: Path, repo_key: str | None = None) -> A
     return None
 
 
-def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> tuple[dict[str, Any], str, str]:
+def run_wgx_routine_preview(
+    repo_key: str, repo_path: Path, routine_id: str
+) -> tuple[dict[str, Any], str, str]:
     """
     Runs `wgx routine <id> preview`.
     Returns (preview_json, confirm_token, preview_hash).
@@ -418,13 +425,17 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
     return preview_data, token, preview_hash
 
 
-def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token: str, preview_hash: str) -> dict[str, Any]:
+def run_wgx_routine_apply(
+    repo_key: str, repo_path: Path, routine_id: str, token: str, preview_hash: str
+) -> dict[str, Any]:
     """
     Validates token, runs `wgx routine <id> apply`.
     Returns result json.
     """
     if not validate_and_consume_token(token, repo_key, routine_id, preview_hash):
-        raise HTTPException(status_code=403, detail="Invalid, expired, or mismatched confirmation token.")
+        raise HTTPException(
+            status_code=403, detail="Invalid, expired, or mismatched confirmation token."
+        )
 
     # Removed --stdout-json assumption
     cmd = ["wgx", "routine", routine_id, "apply"]

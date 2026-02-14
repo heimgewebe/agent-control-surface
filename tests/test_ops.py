@@ -1,11 +1,21 @@
 import json
-import pytest
 from pathlib import Path
-from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact, extract_json_from_stdout
-from panel.runner import CmdResult
+
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
 from panel.app import app
+from panel.ops import (
+    AuditGit,
+    create_token,
+    extract_json_from_stdout,
+    get_latest_audit_artifact,
+    run_wgx_audit_git,
+    run_wgx_routine_apply,
+    run_wgx_routine_preview,
+)
+from panel.runner import CmdResult
 
 # Mock JSON responses matching WGX output
 MOCK_AUDIT_JSON = json.dumps({
@@ -103,7 +113,12 @@ def mock_run_wgx(monkeypatch):
                      # Return path relative to repo (cwd)
                      return CmdResult(0, str(Path(".wgx") / "out" / filename), "", cmd)
              elif repo == "fail_repo":
-                 return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
+                 return CmdResult(
+                     1,
+                     MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'),
+                     "some stderr",
+                     cmd,
+                 )
              elif repo == "metarepo": # For API tests using metarepo
                  return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
@@ -300,7 +315,8 @@ def test_run_wgx_audit_git_file_mode(tmp_path, monkeypatch):
 
     # Mock run to return the path relative to repo
     # Note: the real code now resolves this path absolutely.
-    # If the mock returns a relative path, extract_path_from_stdout will resolve it against repo_path.
+    # If the mock returns a relative path, extract_path_from_stdout will
+    # resolve it against repo_path.
     def _run(cmd, cwd, timeout=60, **kwargs):
         # Must return the path relative to cwd (repo_path)
         return CmdResult(0, ".wgx/out/audit.git.v1.test.json", "", cmd)
@@ -417,7 +433,10 @@ def test_routines_safety_gate(monkeypatch, mock_get_repo):
     assert "disabled" in res.json()["detail"]
 
     # Payload must be valid to reach 403
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"})
+    res = client.post(
+        "/api/routine/apply",
+        json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"},
+    )
     assert res.status_code == 403, res.text
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
@@ -427,7 +446,9 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
 
     # Preview
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
+    res = client.post(
+        "/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}
+    )
     assert res.status_code == 200
     assert "confirm_token" in res.json()
 
@@ -457,9 +478,19 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     monkeypatch.setattr("panel.ops.run", _run)
 
     # Register token manually with hash
-    real_token = create_token({"repo_key": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"})
+    real_token = create_token(
+        {"repo_key": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"}
+    )
 
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token, "preview_hash": "abc"})
+    res = client.post(
+        "/api/routine/apply",
+        json={
+            "repo": "metarepo",
+            "id": "fail.test",
+            "confirm_token": real_token,
+            "preview_hash": "abc",
+        },
+    )
     assert res.status_code == 409
     assert res.json()["ok"] is False
 
@@ -486,9 +517,19 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    real_token = create_token({"repo_key": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
+    real_token = create_token(
+        {"repo_key": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"}
+    )
 
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"})
+    res = client.post(
+        "/api/routine/apply",
+        json={
+            "repo": "metarepo",
+            "id": "invalid.test",
+            "confirm_token": real_token,
+            "preview_hash": "abc",
+        },
+    )
     assert res.status_code == 500
     assert "missing 'ok' field" in res.json()["detail"]
 
@@ -499,16 +540,26 @@ def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "supersecret")
 
     # 1. Missing header -> 403
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
+    res = client.post(
+        "/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}
+    )
     assert res.status_code == 403
     assert "X-ACS-Actor-Token" in res.json()["detail"]
 
     # 2. Wrong header -> 403
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "wrong"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={"X-ACS-Actor-Token": "wrong"},
+    )
     assert res.status_code == 403
 
     # 3. Correct header -> 200
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "supersecret"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={"X-ACS-Actor-Token": "supersecret"},
+    )
     assert res.status_code == 200
     assert "confirm_token" in res.json()
 
@@ -518,7 +569,9 @@ def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
 
     # Invalid ID (spaces) -> 422
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "invalid id with spaces"})
+    res = client.post(
+        "/api/routine/preview", json={"repo": "metarepo", "id": "invalid id with spaces"}
+    )
     assert res.status_code == 422
 
     # Invalid ID (shell chars) -> 422
@@ -557,7 +610,7 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     Verifies that if audit returns 'error' status (findings), the Job status becomes 'error',
     but ActionResult.ok is True (execution success).
     """
-    from panel.app import run_audit_job, ActionResult
+    from panel.app import ActionResult, run_audit_job
 
     # 1. Mock internal calls
     status_calls = []
@@ -603,8 +656,7 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     and ActionResult.ok is False.
     """
     # Ensure necessary imports are present for robustness
-    from pathlib import Path
-    from panel.app import run_audit_job, ActionResult
+    from panel.app import ActionResult, run_audit_job
     from panel.repos import Repo
 
     # 1. Mock internal calls
@@ -622,7 +674,6 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
         raise RuntimeError("WGX crashed")
 
     # We need mock_get_repo to succeed so we reach the audit call
-    from panel.repos import Repo
     def mock_get_repo(key):
         return Repo(key=key, path=tmp_path / "mock", display="mock")
 
@@ -669,7 +720,7 @@ def test_resolve_existing_traversal(tmp_path):
 
 def test_run_wgx_routine_apply_nonzero_exit_with_ok_unit(monkeypatch, tmp_path):
     """Test that nonzero exit is accepted if JSON has 'ok': True."""
-    from panel.ops import run_wgx_routine_apply, create_token
+    from panel.ops import create_token, run_wgx_routine_apply
     repo_path = _mk_repo(tmp_path)
 
     token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
@@ -687,7 +738,7 @@ def test_run_wgx_routine_apply_nonzero_exit_with_ok_unit(monkeypatch, tmp_path):
 
 def test_run_wgx_routine_apply_nonzero_exit_without_ok_fails_unit(monkeypatch, tmp_path):
     """Test that nonzero exit fails if JSON lacks 'ok': True."""
-    from panel.ops import run_wgx_routine_apply, create_token
+    from panel.ops import create_token, run_wgx_routine_apply
     repo_path = _mk_repo(tmp_path)
 
     token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
@@ -715,10 +766,28 @@ def test_run_wgx_command_redaction_unit(monkeypatch, tmp_path):
 
     monkeypatch.setattr("panel.ops.run", mock_run)
 
-    # We need to clear the cache of sensitive env values because it might have been populated already
+    # We need to clear the cache of sensitive env values because it might
+    # have been populated already
     import panel.logging
     panel.logging._get_sensitive_env_values.cache_clear()
 
     data, code, details = _run_wgx_command(["test"], tmp_path, 60)
     assert "super-secret-token" not in details
     assert "[redacted]" in details
+
+def test_run_wgx_command_diagnostics_unit(monkeypatch, tmp_path):
+    """Test that diagnostics combine stdout and stderr in _run_wgx_command."""
+    from panel.ops import _run_wgx_command
+
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(1, "output line 1\noutput line 2", "error line 1\nerror line 2", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run_wgx_command(["test"], tmp_path, 60)
+
+    msg = str(excinfo.value)
+    # Newlines should be escaped
+    assert "stdout='output line 1\\noutput line 2'" in msg
+    assert "stderr='error line 1\\nerror line 2'" in msg
