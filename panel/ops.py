@@ -412,12 +412,12 @@ def run_wgx_routine_preview(
         fallback_paths=[repo_path / ".wgx" / "out" / "routine.preview.json"],
     )
 
-    if isinstance(preview_data, dict):
-        preview_data["_exit_code"] = exit_code
-
-    # Calculate canonical hash of the preview content
+    # Calculate canonical hash of the preview content (before metadata injection)
     canonical = json.dumps(preview_data, sort_keys=True, separators=(",", ":"))
     preview_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    if isinstance(preview_data, dict):
+        preview_data["_exit_code"] = exit_code
 
     token = create_token(
         {"repo_key": repo_key, "routine_id": routine_id, "preview_hash": preview_hash}
