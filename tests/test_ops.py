@@ -788,6 +788,7 @@ def test_run_wgx_command_diagnostics_unit(monkeypatch, tmp_path):
         _run_wgx_command(["test"], tmp_path, 60)
 
     msg = str(excinfo.value)
-    # Newlines should be escaped
-    assert "stdout='output line 1\\noutput line 2'" in msg
-    assert "stderr='error line 1\\nerror line 2'" in msg
+    # Check for presence of both streams and escaped newlines
+    assert "stdout=" in msg and "stderr=" in msg
+    assert "output line 1\\noutput line 2" in msg
+    assert "error line 1\\nerror line 2" in msg

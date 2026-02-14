@@ -315,7 +315,7 @@ def run_wgx_audit_git(
         timeout=60,
         fallback_paths=None if stdout_json else fallback_paths,
         try_stdout_json=True,
-        try_stdout_path=True,
+        try_stdout_path=not stdout_json,
     )
 
     # Validate with Pydantic
