@@ -646,3 +646,79 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     assert result.ok is False
     assert result.error_kind == "internal"
     assert "WGX crashed" in result.message
+
+def test_resolve_existing_traversal(tmp_path):
+    """Test that _resolve_existing prevents path traversal."""
+    from panel.ops import _resolve_existing
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    secret_file = tmp_path / "secret.txt"
+    secret_file.write_text("top secret")
+
+    # Relative traversal
+    assert _resolve_existing(Path("../secret.txt"), repo_path) is None
+
+    # Absolute traversal
+    assert _resolve_existing(secret_file.absolute(), repo_path) is None
+
+    # Safe path
+    safe_file = repo_path / "safe.txt"
+    safe_file.write_text("safe")
+    assert _resolve_existing(Path("safe.txt"), repo_path) is not None
+
+def test_run_wgx_routine_apply_nonzero_exit_with_ok_unit(monkeypatch, tmp_path):
+    """Test that nonzero exit is accepted if JSON has 'ok': True."""
+    from panel.ops import run_wgx_routine_apply, create_token
+    repo_path = _mk_repo(tmp_path)
+
+    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
+
+    ok_json = json.dumps({"ok": True, "kind": "routine.result"})
+
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(1, ok_json, "some stderr", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    res = run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
+    assert res["ok"] is True
+    assert res["_exit_code"] == 1
+
+def test_run_wgx_routine_apply_nonzero_exit_without_ok_fails_unit(monkeypatch, tmp_path):
+    """Test that nonzero exit fails if JSON lacks 'ok': True."""
+    from panel.ops import run_wgx_routine_apply, create_token
+    repo_path = _mk_repo(tmp_path)
+
+    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
+
+    bad_json = json.dumps({"kind": "routine.result"}) # missing 'ok'
+
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(1, bad_json, "error details", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
+    assert "lacks 'ok' field" in str(excinfo.value)
+    assert "error details" in str(excinfo.value)
+
+def test_run_wgx_command_redaction_unit(monkeypatch, tmp_path):
+    """Test that diagnostic details are redacted in _run_wgx_command."""
+    from panel.ops import _run_wgx_command
+
+    monkeypatch.setenv("GH_TOKEN", "super-secret-token")
+
+    def mock_run(cmd, cwd, timeout=60):
+        return CmdResult(0, "{}", "Error with super-secret-token here", cmd)
+
+    monkeypatch.setattr("panel.ops.run", mock_run)
+
+    # We need to clear the cache of sensitive env values because it might have been populated already
+    import panel.logging
+    panel.logging._get_sensitive_env_values.cache_clear()
+
+    data, code, details = _run_wgx_command(["test"], tmp_path, 60)
+    assert "super-secret-token" not in details
+    assert "[redacted]" in details
