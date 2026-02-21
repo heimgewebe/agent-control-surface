@@ -420,14 +420,29 @@ def test_routines_safety_gate(monkeypatch, mock_get_repo):
     res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"})
     assert res.status_code == 403, res.text
 
+def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
+    """Test that routines fail with 403 if ACS_ROUTINES_SHARED_SECRET is not set."""
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.delenv("ACS_ROUTINES_SHARED_SECRET", raising=False)
+
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
+    assert res.status_code == 403
+    assert "ACS_ROUTINES_SHARED_SECRET is not configured" in res.json()["detail"]
+
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled."""
     client = TestClient(app)
 
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
     # Preview
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
     assert res.status_code == 200
     assert "confirm_token" in res.json()
 
@@ -435,6 +450,7 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     """Test that api_routine_apply returns 409 if the routine reports ok=False."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
     # We need a valid token first
     _, token, p_hash = run_wgx_routine_preview("metarepo", mock_get_repo, "git.repair.remote-head")
@@ -459,7 +475,11 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     # Register token manually with hash
     real_token = create_token({"repo_key": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"})
 
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token, "preview_hash": "abc"})
+    res = client.post(
+        "/api/routine/apply",
+        json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token, "preview_hash": "abc"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
     assert res.status_code == 409
     assert res.json()["ok"] is False
 
@@ -467,6 +487,7 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
     """Test that api_routine_apply returns 500 if the routine output lacks 'ok' field."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
     # Mock result without 'ok' field (invalid result structure)
     mock_invalid_json = json.dumps({
@@ -488,7 +509,11 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
 
     real_token = create_token({"repo_key": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
 
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"})
+    res = client.post(
+        "/api/routine/apply",
+        json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
     assert res.status_code == 500
     assert "missing 'ok' field" in res.json()["detail"]
 
@@ -516,13 +541,22 @@ def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     """Test that invalid routine IDs are rejected."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
     # Invalid ID (spaces) -> 422
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "invalid id with spaces"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "invalid id with spaces"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
     assert res.status_code == 422
 
     # Invalid ID (shell chars) -> 422
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "id; rm -rf /"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "id; rm -rf /"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
     assert res.status_code == 422
 
 def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
