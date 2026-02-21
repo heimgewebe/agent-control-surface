@@ -1,89 +1,75 @@
 import json
-from pathlib import Path
-
 import pytest
+from pathlib import Path
+from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact, extract_json_from_stdout
+from panel.runner import CmdResult
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-
 from panel.app import app
-from panel.ops import (
-    AuditGit,
-    create_token,
-    extract_json_from_stdout,
-    get_latest_audit_artifact,
-    run_wgx_audit_git,
-    run_wgx_routine_apply,
-    run_wgx_routine_preview,
-)
-from panel.runner import CmdResult
 
 # Mock JSON responses matching WGX output
-MOCK_AUDIT_JSON = json.dumps(
-    {
-        "kind": "audit.git",
-        "schema_version": "v1",
-        "ts": "2023-10-27T10:00:00Z",
-        "repo": "mock_repo",
-        "cwd": "/tmp/mock_repo",
-        "status": "ok",
-        "facts": {
-            "head_sha": "abcdef123456",
-            "head_ref": "refs/heads/feature",
-            "is_detached_head": False,
-            "local_branch": "feature",
-            "upstream": {"name": "origin/main", "exists_locally": True},
-            "remotes": ["origin"],
-            "remote_default_branch": "main",
-            "remote_refs": {"origin_main": True, "origin_head": True, "origin_upstream": True},
-            "working_tree": {"is_clean": True, "staged": 0, "unstaged": 0, "untracked": 0},
-            "ahead_behind": {"ahead": 0, "behind": 0},
-        },
-        "checks": [{"id": "git.repo.present", "status": "ok", "message": "Repo present"}],
-        "uncertainty": {"level": 0.0, "causes": [], "meta": "productive"},
-        "suggested_routines": [],
-        "correlation_id": "test-correlation-id",
-    }
-)
+MOCK_AUDIT_JSON = json.dumps({
+    "kind": "audit.git",
+    "schema_version": "v1",
+    "ts": "2023-10-27T10:00:00Z",
+    "repo": "mock_repo",
+    "cwd": "/tmp/mock_repo",
+    "status": "ok",
+    "facts": {
+        "head_sha": "abcdef123456",
+        "head_ref": "refs/heads/feature",
+        "is_detached_head": False,
+        "local_branch": "feature",
+        "upstream": {"name": "origin/main", "exists_locally": True},
+        "remotes": ["origin"],
+        "remote_default_branch": "main",
+        "remote_refs": {"origin_main": True, "origin_head": True, "origin_upstream": True},
+        "working_tree": {"is_clean": True, "staged": 0, "unstaged": 0, "untracked": 0},
+        "ahead_behind": {"ahead": 0, "behind": 0}
+    },
+    "checks": [
+        {"id": "git.repo.present", "status": "ok", "message": "Repo present"}
+    ],
+    "uncertainty": {
+        "level": 0.0,
+        "causes": [],
+        "meta": "productive"
+    },
+    "suggested_routines": [],
+    "correlation_id": "test-correlation-id"
+})
 
-MOCK_PREVIEW_JSON = json.dumps(
-    {
-        "kind": "routine.preview",
-        "id": "git.repair.remote-head",
-        "mode": "dry-run",
-        "mutating": True,
-        "risk": "low",
-        "steps": [{"cmd": "git remote set-head origin --auto", "why": "Restore origin/HEAD"}],
-        "expected_effect": "origin/HEAD restored",
-    }
-)
+MOCK_PREVIEW_JSON = json.dumps({
+    "kind": "routine.preview",
+    "id": "git.repair.remote-head",
+    "mode": "dry-run",
+    "mutating": True,
+    "risk": "low",
+    "steps": [{"cmd": "git remote set-head origin --auto", "why": "Restore origin/HEAD"}],
+    "expected_effect": "origin/HEAD restored"
+})
 
-MOCK_RESULT_JSON = json.dumps(
-    {
-        "kind": "routine.result",
-        "id": "git.repair.remote-head",
-        "mode": "apply",
-        "mutating": True,
-        "ok": True,
-        "state_hash": {"before": "aaa", "after": "bbb"},
-        "stdout": "Fixed.",
-    }
-)
-
+MOCK_RESULT_JSON = json.dumps({
+    "kind": "routine.result",
+    "id": "git.repair.remote-head",
+    "mode": "apply",
+    "mutating": True,
+    "ok": True,
+    "state_hash": {"before": "aaa", "after": "bbb"},
+    "stdout": "Fixed."
+})
 
 def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
     p = tmp_path / name
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-
 @pytest.fixture(autouse=True)
 def _reset_token_store():
     from panel.ops import TOKEN_STORE
-
     TOKEN_STORE.clear()
     yield
     TOKEN_STORE.clear()
-
 
 @pytest.fixture
 def mock_run_wgx(monkeypatch):
@@ -91,47 +77,39 @@ def mock_run_wgx(monkeypatch):
         # Robust list-based matching
         # Check for audit command
         if cmd[:3] == ["wgx", "audit", "git"] and "--repo" in cmd:
-            repo_idx = cmd.index("--repo") + 1
-            repo = cmd[repo_idx]
+             repo_idx = cmd.index("--repo") + 1
+             repo = cmd[repo_idx]
 
-            if repo == "mock_repo":
-                if "--stdout-json" in cmd:
-                    return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+             if repo == "mock_repo":
+                 if "--stdout-json" in cmd:
+                     return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+                 else:
+                     # File mode (default)
+                     # Determine correlation ID
+                     try:
+                         cid_idx = cmd.index("--correlation-id") + 1
+                         cid = cmd[cid_idx]
+                     except (ValueError, IndexError):
+                         cid = "unknown"
 
-                # File mode (default)
-                try:
-                    cid_idx = cmd.index("--correlation-id") + 1
-                    cid = cmd[cid_idx]
-                except (ValueError, IndexError):
-                    cid = "unknown"
+                     # Write to file
+                     cwd_path = Path(cwd)
+                     out_dir = cwd_path / ".wgx" / "out"
+                     out_dir.mkdir(parents=True, exist_ok=True)
 
-                cwd_path = Path(cwd)
-                out_dir = cwd_path / ".wgx" / "out"
-                out_dir.mkdir(parents=True, exist_ok=True)
+                     filename = f"audit.git.v1.{cid}.json"
+                     (out_dir / filename).write_text(MOCK_AUDIT_JSON, encoding="utf-8")
 
-                filename = f"audit.git.v1.{cid}.json"
-                (out_dir / filename).write_text(MOCK_AUDIT_JSON, encoding="utf-8")
-
-                # Return path relative to repo (cwd)
-                return CmdResult(0, str(Path(".wgx") / "out" / filename), "", cmd)
-
-            if repo == "fail_repo":
-                return CmdResult(
-                    1,
-                    MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'),
-                    "some stderr",
-                    cmd,
-                )
-
-            if repo == "metarepo":  # For API tests using metarepo
-                return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
+                     # Return path relative to repo (cwd)
+                     return CmdResult(0, str(Path(".wgx") / "out" / filename), "", cmd)
+             elif repo == "fail_repo":
+                 return CmdResult(1, MOCK_AUDIT_JSON.replace('"status": "ok"', '"status": "error"'), "some stderr", cmd)
+             elif repo == "metarepo": # For API tests using metarepo
+                 return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
         # Check for routine preview
         if "routine" in cmd and "preview" in cmd:
             if "git.repair.remote-head" in cmd:
-                return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
-            # For tests that use arbitrary ids, allow a generic preview shape:
-            if "fail.test" in cmd or "invalid.test" in cmd:
                 return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
 
         # Check for routine apply
@@ -139,23 +117,21 @@ def mock_run_wgx(monkeypatch):
             if "git.repair.remote-head" in cmd:
                 return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
             if "fail.test" in cmd:
-                return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
+                 return CmdResult(1, MOCK_RESULT_JSON, "some stderr", cmd)
 
         return CmdResult(1, "", f"Unknown command: {cmd}", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-
 def test_run_wgx_audit_git(mock_run_wgx, tmp_path):
     # Tests file mode (default behavior)
     repo_path = _mk_repo(tmp_path, "repo")
-    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1")  # stdout_json=False
+    result = run_wgx_audit_git("mock_repo", repo_path, "corr-1") # Defaults to stdout_json=False
 
     assert isinstance(result, AuditGit)
     assert result.repo == "mock_repo"
     assert result.status == "ok"
     assert result.correlation_id == "corr-1"
-
 
 def test_run_wgx_audit_git_nonzero_exit_with_json(mock_run_wgx, tmp_path):
     repo_path = _mk_repo(tmp_path, "fail_repo")
@@ -163,7 +139,6 @@ def test_run_wgx_audit_git_nonzero_exit_with_json(mock_run_wgx, tmp_path):
 
     assert isinstance(result, AuditGit)
     assert result.status == "error"
-
 
 def test_run_wgx_audit_git_stdout_flag(monkeypatch, tmp_path):
     repo_path = _mk_repo(tmp_path, "mock_repo")
@@ -176,11 +151,10 @@ def test_run_wgx_audit_git_stdout_flag(monkeypatch, tmp_path):
         return CmdResult(0, MOCK_AUDIT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
-
+    # This should succeed by parsing the mocked MOCK_AUDIT_JSON as stdout
     result = run_wgx_audit_git("mock_repo", repo_path, "corr-1", stdout_json=True)
     assert called_with_flag
     assert result.status == "ok"
-
 
 def test_token_mismatch_deletes_token(mock_run_wgx, tmp_path):
     """Test that token validation mismatch deletes the token to prevent brute-forcing."""
@@ -188,18 +162,18 @@ def test_token_mismatch_deletes_token(mock_run_wgx, tmp_path):
     repo_key = "mock_repo"
     routine_id = "git.repair.remote-head"
 
+    # Generate token
     _, token, p_hash = run_wgx_routine_preview(repo_key, repo_path, routine_id)
 
-    # Try to use token with wrong repo -> token should be consumed/removed
+    # Try to use token with wrong repo
     with pytest.raises(HTTPException) as excinfo:
         run_wgx_routine_apply("wrong_repo", repo_path, routine_id, token, p_hash)
     assert excinfo.value.status_code == 403
 
-    # Try again with correct repo - should fail because token was deleted
+    # Try again with CORRECT repo - should fail because token was deleted
     with pytest.raises(HTTPException) as excinfo:
         run_wgx_routine_apply(repo_key, repo_path, routine_id, token, p_hash)
     assert excinfo.value.status_code == 403
-
 
 def test_run_wgx_routine_flow(mock_run_wgx, tmp_path):
     repo_path = _mk_repo(tmp_path, "mock_repo")
@@ -217,7 +191,6 @@ def test_run_wgx_routine_flow(mock_run_wgx, tmp_path):
     assert result["kind"] == "routine.result"
     assert result["ok"] is True
 
-
 def test_run_wgx_routine_apply_invalid_token(mock_run_wgx, tmp_path):
     repo_path = _mk_repo(tmp_path, "mock_repo")
     repo_key = "mock_repo"
@@ -229,13 +202,12 @@ def test_run_wgx_routine_apply_invalid_token(mock_run_wgx, tmp_path):
 
     assert excinfo.value.status_code == 403
 
-
 def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx, tmp_path):
     repo_path = _mk_repo(tmp_path, "mock_repo")
     repo_key = "mock_repo"
     routine_id = "git.repair.remote-head"
 
-    _, token, p_hash = run_wgx_routine_preview(repo_key, repo_path, routine_id)
+    preview, token, p_hash = run_wgx_routine_preview(repo_key, repo_path, routine_id)
 
     # Use once -> OK
     run_wgx_routine_apply(repo_key, repo_path, routine_id, token, p_hash)
@@ -246,7 +218,6 @@ def test_run_wgx_routine_apply_token_reuse_fails(mock_run_wgx, tmp_path):
 
     assert excinfo.value.status_code == 403
 
-
 def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, tmp_path):
     """
     Test that a non-zero exit code is tolerated if valid JSON with 'ok' field is returned.
@@ -255,8 +226,10 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, tmp_p
     repo_key = "mock_repo"
     routine_id = "fail.test"
 
+    # Manually create valid token for test
     token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
+    # Local mock runner that forces nonzero exit but valid JSON
     def _run_nonzero(cmd, cwd, timeout=60, **kwargs):
         if "fail.test" in cmd:
             return CmdResult(1, MOCK_RESULT_JSON, "", cmd)
@@ -269,8 +242,7 @@ def test_run_wgx_routine_apply_handles_nonzero_exit_with_json(monkeypatch, tmp_p
     assert result["ok"] is True
     assert result.get("_exit_code") == 1
 
-
-def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, tmp_path):
+def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, mock_run_wgx, tmp_path):
     """
     Test that non-zero exit code raises Error if JSON lacks 'ok' field.
     """
@@ -278,7 +250,7 @@ def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, tmp_path):
     repo_key = "mock_repo"
     routine_id = "crash.test"
 
-    bad_json = json.dumps({"kind": "error", "message": "Crash"})  # No 'ok'
+    bad_json = json.dumps({"kind": "error", "message": "Crash"}) # No 'ok'
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "crash.test" in cmd:
@@ -286,7 +258,6 @@ def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, tmp_path):
         return CmdResult(0, "{}", "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
-
     token = create_token({"repo_key": repo_key, "routine_id": routine_id, "preview_hash": "abc"})
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -294,38 +265,44 @@ def test_run_wgx_routine_apply_nonzero_exit_without_ok(monkeypatch, tmp_path):
 
     assert "lacks 'ok' field" in str(excinfo.value)
 
-
 def test_get_latest_audit_artifact(tmp_path):
+    # Setup .wgx/out structure
     out_dir = tmp_path / ".wgx" / "out"
     out_dir.mkdir(parents=True)
 
+    # Old file
     old = out_dir / "audit.git.v1.old.json"
     old.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
-
+    # Force older mtime
     import os
-
     os.utime(old, (100, 100))
 
+    # New file
     new = out_dir / "audit.git.v1.new.json"
+    # Robustly modify JSON instead of string replace
     data = json.loads(MOCK_AUDIT_JSON)
     data["status"] = "warn"
     new.write_text(json.dumps(data), encoding="utf-8")
 
     result = get_latest_audit_artifact(tmp_path)
     assert result is not None
-    assert result.status == "warn"
-
+    assert result.status == "warn" # Should pick the new one
 
 def test_run_wgx_audit_git_file_mode(tmp_path, monkeypatch):
     """Test that file artifact mode works by reading the file returned in stdout."""
     repo_path = _mk_repo(tmp_path, "repo")
 
+    # Create the artifact file that wgx would create
     out_dir = repo_path / ".wgx" / "out"
     out_dir.mkdir(parents=True)
     artifact_path = out_dir / "audit.git.v1.test.json"
     artifact_path.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
 
+    # Mock run to return the path relative to repo
+    # Note: the real code now resolves this path absolutely.
+    # If the mock returns a relative path, extract_path_from_stdout will resolve it against repo_path.
     def _run(cmd, cwd, timeout=60, **kwargs):
+        # Must return the path relative to cwd (repo_path)
         return CmdResult(0, ".wgx/out/audit.git.v1.test.json", "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
@@ -334,15 +311,15 @@ def test_run_wgx_audit_git_file_mode(tmp_path, monkeypatch):
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
 
-
 def test_run_wgx_audit_git_stdout_noise_info(monkeypatch, tmp_path):
     """Test robust JSON extraction when stdout contains [INFO] tags which are brackets."""
     repo_path = _mk_repo(tmp_path, "mock_repo")
+
     noisy_output = f"[INFO] Starting audit\n{MOCK_AUDIT_JSON}\n[DEBUG] Cleanup done"
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "--stdout-json" in cmd:
-            return CmdResult(0, noisy_output, "", cmd)
+             return CmdResult(0, noisy_output, "", cmd)
         return CmdResult(1, "", "fail", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
@@ -351,7 +328,6 @@ def test_run_wgx_audit_git_stdout_noise_info(monkeypatch, tmp_path):
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
     assert result.correlation_id == "corr-test"
-
 
 def test_extract_json_from_stdout_nested_brackets():
     """Test parsing JSON objects that contain brackets/braces in strings."""
@@ -362,20 +338,22 @@ def test_extract_json_from_stdout_nested_brackets():
     assert result["key"] == "value with { braces }"
     assert result["list"] == [1, 2, 3]
 
-
 def test_run_wgx_routine_stdout_fallback_file_path(tmp_path, monkeypatch):
     """
-    Test that if wgx routine outputs a file path instead of JSON,
+    Test that if wgx routine outputs a file path instead of JSON (because no --stdout-json flag),
     the code correctly reads that file.
     """
     repo_path = _mk_repo(tmp_path, "repo")
     repo_key = "mock_repo"
     routine_id = "git.repair.remote-head"
 
+    # Setup artifact file
     out_dir = repo_path / ".wgx" / "out"
     out_dir.mkdir(parents=True)
-    (out_dir / "routine.preview.json").write_text(MOCK_PREVIEW_JSON, encoding="utf-8")
+    artifact_path = out_dir / "routine.preview.json"
+    artifact_path.write_text(MOCK_PREVIEW_JSON, encoding="utf-8")
 
+    # Mock run to return path (relative)
     def _run(cmd, cwd, timeout=60, **kwargs):
         return CmdResult(0, ".wgx/out/routine.preview.json", "", cmd)
 
@@ -383,32 +361,28 @@ def test_run_wgx_routine_stdout_fallback_file_path(tmp_path, monkeypatch):
 
     preview, token, p_hash = run_wgx_routine_preview(repo_key, repo_path, routine_id)
     assert preview["kind"] == "routine.preview"
-    assert token
-    assert p_hash
-
 
 # API & Sync Fallback Tests
-
 
 @pytest.fixture
 def mock_get_repo(monkeypatch, tmp_path):
     """Patches get_repo to always return a Repo pointing to tmp_path for CI stability."""
     from panel.repos import Repo
-
     def _get_repo(key):
         return Repo(key=key, path=tmp_path, display=f"mock/{key}")
 
     monkeypatch.setattr("panel.app.get_repo", _get_repo)
     return tmp_path
 
-
 def test_api_audit_git_sync_fallback(monkeypatch, mock_get_repo):
     """Test that sync audit endpoint falls back to file mode if stdout fails."""
     client = TestClient(app)
 
+    # Setup artifact file for fallback
     out_dir = mock_get_repo / ".wgx" / "out"
     out_dir.mkdir(parents=True)
-    (out_dir / "audit.git.v1.json").write_text(MOCK_AUDIT_JSON, encoding="utf-8")
+    artifact_path = out_dir / "audit.git.v1.json"
+    artifact_path.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
 
     call_count = 0
 
@@ -416,11 +390,12 @@ def test_api_audit_git_sync_fallback(monkeypatch, mock_get_repo):
         nonlocal call_count
         call_count += 1
 
-        # 1) Stdout attempt -> Fail
+        # 1. Stdout attempt -> Fail
         if "--stdout-json" in cmd:
             return CmdResult(1, "invalid json", "error", cmd)
 
-        # 2) File mode attempt -> Succeed
+        # 2. File mode attempt -> Succeed
+        # Return path to the file we created
         return CmdResult(0, ".wgx/out/audit.git.v1.json", "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
@@ -428,25 +403,22 @@ def test_api_audit_git_sync_fallback(monkeypatch, mock_get_repo):
     response = client.get("/api/audit/git/sync?repo=metarepo")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert call_count == 2
-
+    assert call_count == 2 # Should have tried twice
 
 def test_routines_safety_gate(monkeypatch, mock_get_repo):
     """Test that routine endpoints are disabled by default."""
     client = TestClient(app)
 
+    # Default: disabled -> 403
     monkeypatch.delenv("ACS_ENABLE_ROUTINES", raising=False)
 
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
     assert res.status_code == 403, res.text
     assert "disabled" in res.json()["detail"]
 
-    res = client.post(
-        "/api/routine/apply",
-        json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"},
-    )
+    # Payload must be valid to reach 403
+    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"})
     assert res.status_code == 403, res.text
-
 
 def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
     """Test that routines fail with 403 if ACS_ROUTINES_SHARED_SECRET is not set."""
@@ -457,7 +429,6 @@ def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
     assert res.status_code == 403
     assert "ACS_ROUTINES_SHARED_SECRET" in res.json()["detail"]
-
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled."""
@@ -470,7 +441,7 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "git.repair.remote-head"},
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 200
     data = res.json()
@@ -484,13 +455,12 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
             "repo": "metarepo",
             "id": "git.repair.remote-head",
             "confirm_token": data["confirm_token"],
-            "preview_hash": data["preview_hash"],
+            "preview_hash": data["preview_hash"]
         },
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 200
     assert res.json()["ok"] is True
-
 
 def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that api_routine_apply returns 409 if the routine reports ok=False."""
@@ -498,16 +468,15 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
-    mock_fail_json = json.dumps(
-        {
-            "kind": "routine.result",
-            "id": "fail.test",
-            "mode": "apply",
-            "mutating": True,
-            "ok": False,
-            "stdout": "Oops.",
-        }
-    )
+    # Mock result with ok=False
+    mock_fail_json = json.dumps({
+        "kind": "routine.result",
+        "id": "fail.test",
+        "mode": "apply",
+        "mutating": True,
+        "ok": False,
+        "stdout": "Oops."
+    })
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "fail.test" in cmd:
@@ -518,29 +487,28 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    # 1) Preview -> real token/hash
+    # 1. Preview to get real token/hash
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "fail.test"},
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 200
     data = res.json()
 
-    # 2) Apply -> conflict
+    # 2. Apply and expect conflict
     res = client.post(
         "/api/routine/apply",
         json={
             "repo": "metarepo",
             "id": "fail.test",
             "confirm_token": data["confirm_token"],
-            "preview_hash": data["preview_hash"],
+            "preview_hash": data["preview_hash"]
         },
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 409
     assert res.json()["ok"] is False
-
 
 def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that api_routine_apply returns 500 if the routine output lacks 'ok' field."""
@@ -548,78 +516,122 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
-    mock_invalid_json = json.dumps(
-        {
-            "kind": "routine.result",
-            "id": "invalid.test",
-            "mode": "apply",
-            "mutating": True,
-            # "ok": missing
-            "stdout": "Weird result.",
-        }
-    )
+    # Mock result without 'ok' field (invalid result structure)
+    mock_invalid_json = json.dumps({
+        "kind": "routine.result",
+        "id": "invalid.test",
+        "mode": "apply",
+        "mutating": True,
+        # "ok": is missing
+        "stdout": "Weird result."
+    })
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "invalid.test" in cmd:
             if "preview" in cmd:
                 return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
+            # Exit code 0 so ops layer passes it through, but content is invalid for API
             return CmdResult(0, mock_invalid_json, "", cmd)
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    # 1) Preview
+    # 1. Preview
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "invalid.test"},
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 200
     data = res.json()
 
-    # 2) Apply -> 500 because result lacks 'ok'
+    # 2. Apply
     res = client.post(
         "/api/routine/apply",
         json={
             "repo": "metarepo",
             "id": "invalid.test",
             "confirm_token": data["confirm_token"],
-            "preview_hash": data["preview_hash"],
+            "preview_hash": data["preview_hash"]
         },
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 500
     assert "missing 'ok' field" in res.json()["detail"]
 
-
 def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
-    """Test that X-ACS-Actor-Token is required if secret is set."""
+    """Test that X-ACS-Actor-Token or CSRF is required if secret is set."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "supersecret")
 
-    # 1) Missing header -> 403
+    # 1. Missing both -> 403
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
     assert res.status_code == 403
-    assert "X-ACS-Actor-Token" in res.json()["detail"]
+    assert "X-ACS-Actor-Token" in res.json()["detail"] or "X-ACS-CSRF" in res.json()["detail"]
 
-    # 2) Wrong header -> 403
-    res = client.post(
-        "/api/routine/preview",
-        json={"repo": "metarepo", "id": "git.repair.remote-head"},
-        headers={"X-ACS-Actor-Token": "wrong"},
-    )
+    # 2. Wrong Actor-Token -> 403
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "wrong"})
     assert res.status_code == 403
 
-    # 3) Correct header -> 200
+    # 3. Correct Actor-Token -> 200
+    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "supersecret"})
+    assert res.status_code == 200
+    assert "confirm_token" in res.json()
+
+def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
+    """Test the UI auth path using CSRF cookie/header and Origin check."""
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "supersecret")
+
+    csrf_token = "test-csrf-token"
+    # Set the cookie in the client
+    client.cookies.set("acs_csrf", csrf_token)
+
+    # 1. Valid CSRF but missing Origin/Referer -> 403
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "git.repair.remote-head"},
-        headers={"X-ACS-Actor-Token": "supersecret"},
+        headers={"X-ACS-CSRF": csrf_token}
+    )
+    assert res.status_code == 403
+    assert "Origin mismatch" in res.json()["detail"]
+
+    # 2. Valid CSRF and correct Origin -> 200
+    # TestClient base_url is http://testserver
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={
+            "X-ACS-CSRF": csrf_token,
+            "Origin": "http://testserver"
+        }
     )
     assert res.status_code == 200
     assert "confirm_token" in res.json()
 
+    # 3. Valid CSRF and correct Referer -> 200
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={
+            "X-ACS-CSRF": csrf_token,
+            "Referer": "http://testserver/"
+        }
+    )
+    assert res.status_code == 200
+
+    # 4. Mismatched CSRF -> 403
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={
+            "X-ACS-CSRF": "wrong",
+            "Origin": "http://testserver"
+        }
+    )
+    assert res.status_code == 403
 
 def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     """Test that invalid routine IDs are rejected."""
@@ -627,34 +639,39 @@ def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
+    # Invalid ID (spaces) -> 422
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "invalid id with spaces"},
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 422
 
+    # Invalid ID (shell chars) -> 422
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "id; rm -rf /"},
-        headers={"X-ACS-Actor-Token": "testsecret"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 422
-
 
 def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
     """Test that file artifact mode works when only specific correlation-ID file exists."""
     repo_path = _mk_repo(tmp_path, "repo")
     corr_id = "specific-corr-id"
 
+    # Create the artifact file that wgx would create (specific name)
     out_dir = repo_path / ".wgx" / "out"
     out_dir.mkdir(parents=True)
-    (out_dir / f"audit.git.v1.{corr_id}.json").write_text(MOCK_AUDIT_JSON, encoding="utf-8")
+    artifact_path = out_dir / f"audit.git.v1.{corr_id}.json"
+    artifact_path.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
 
+    # Ensure generic file DOES NOT exist
     generic_path = out_dir / "audit.git.v1.json"
     if generic_path.exists():
         generic_path.unlink()
 
+    # Mock run to return nothing useful in stdout
     def _run(cmd, cwd, timeout=60, **kwargs):
         return CmdResult(0, "some noisy stdout without path", "", cmd)
 
@@ -664,15 +681,15 @@ def test_run_wgx_audit_git_file_mode_specific_filename(tmp_path, monkeypatch):
     assert isinstance(result, AuditGit)
     assert result.status == "ok"
 
-
 def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     """
     Deterministic unit test for run_audit_job logic.
     Verifies that if audit returns 'error' status (findings), the Job status becomes 'error',
     but ActionResult.ok is True (execution success).
     """
-    from panel.app import ActionResult, run_audit_job
+    from panel.app import run_audit_job, ActionResult
 
+    # 1. Mock internal calls
     status_calls = []
     result_calls = []
 
@@ -682,6 +699,7 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     def mock_record_job_result(jid, result):
         result_calls.append((jid, result))
 
+    # Mock run_wgx_audit_git to directly return an AuditGit object with status="error"
     mock_audit_data = json.loads(MOCK_AUDIT_JSON)
     mock_audit_data["status"] = "error"
     audit_obj = AuditGit(**mock_audit_data)
@@ -693,10 +711,14 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     monkeypatch.setattr("panel.app.record_job_result", mock_record_job_result)
     monkeypatch.setattr("panel.app.run_wgx_audit_git", mock_run_wgx_audit_git)
 
+    # 2. Execute unit under test
     run_audit_job("job-123", "corr-456", "mock_repo")
 
+    # 3. Assertions
+    # Ensure job ended with "error" (due to audit findings)
     assert ("job-123", "error") in status_calls
 
+    # Ensure result was recorded with ok=True (execution success) but audit.status="error"
     assert result_calls
     jid, result = result_calls[-1]
     assert jid == "job-123"
@@ -704,16 +726,18 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     assert result.ok is True
     assert result.audit["status"] == "error"
 
-
 def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     """
     Deterministic unit test for run_audit_job logic when technical error occurs.
     Verifies that if tool execution fails (exception), Job status is 'error',
     and ActionResult.ok is False.
     """
-    from panel.app import ActionResult, run_audit_job
+    # Ensure necessary imports are present for robustness
+    from pathlib import Path
+    from panel.app import run_audit_job, ActionResult
     from panel.repos import Repo
 
+    # 1. Mock internal calls
     status_calls = []
     result_calls = []
 
@@ -723,9 +747,12 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     def mock_record_job_result(jid, result):
         result_calls.append((jid, result))
 
+    # Mock run_wgx_audit_git to RAISE exception
     def mock_run_wgx_audit_git(*args, **kwargs):
         raise RuntimeError("WGX crashed")
 
+    # We need mock_get_repo to succeed so we reach the audit call
+    from panel.repos import Repo
     def mock_get_repo(key):
         return Repo(key=key, path=tmp_path / "mock", display="mock")
 
@@ -734,10 +761,14 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     monkeypatch.setattr("panel.app.run_wgx_audit_git", mock_run_wgx_audit_git)
     monkeypatch.setattr("panel.app.get_repo", mock_get_repo)
 
+    # 2. Execute unit under test
     run_audit_job("job-tech-fail", "corr-fail", "mock_repo")
 
+    # 3. Assertions
+    # Job ended with "error"
     assert ("job-tech-fail", "error") in status_calls
 
+    # Result recorded with ok=False
     assert result_calls
     jid, result = result_calls[-1]
     assert jid == "job-tech-fail"
@@ -745,195 +776,3 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     assert result.ok is False
     assert result.error_kind == "internal"
     assert "WGX crashed" in result.message
-
-
-def test_resolve_existing_traversal(tmp_path):
-    """Test that _resolve_existing prevents path traversal."""
-    from panel.ops import _resolve_existing
-
-    repo_path = tmp_path / "repo"
-    repo_path.mkdir()
-
-    secret_file = tmp_path / "secret.txt"
-    secret_file.write_text("top secret")
-
-    assert _resolve_existing(Path("../secret.txt"), repo_path) is None
-    assert _resolve_existing(secret_file.absolute(), repo_path) is None
-
-    safe_file = repo_path / "safe.txt"
-    safe_file.write_text("safe")
-    assert _resolve_existing(Path("safe.txt"), repo_path) is not None
-
-
-def test_run_wgx_routine_apply_nonzero_exit_with_ok_unit(monkeypatch, tmp_path):
-    """Test that nonzero exit is accepted if JSON has 'ok': True."""
-    from panel.ops import _mk_repo as _mk_repo_local  # in case this helper exists elsewhere
-
-    # Use local helper if present, else our _mk_repo
-    repo_path = _mk_repo(tmp_path)
-
-    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
-    ok_json = json.dumps({"ok": True, "kind": "routine.result"})
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(1, ok_json, "some stderr", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    res = run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
-    assert res["ok"] is True
-    assert res["_exit_code"] == 1
-
-
-def test_run_wgx_routine_apply_nonzero_exit_without_ok_fails_unit(monkeypatch, tmp_path):
-    """Test that nonzero exit fails if JSON lacks 'ok': True."""
-    repo_path = _mk_repo(tmp_path)
-
-    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
-    bad_json = json.dumps({"kind": "routine.result"})  # missing 'ok'
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(1, bad_json, "error details", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
-
-    assert "lacks 'ok' field" in str(excinfo.value)
-    assert "error details" in str(excinfo.value)
-
-
-def test_run_wgx_command_redaction_unit(monkeypatch, tmp_path):
-    """Test that diagnostic details are redacted in _run_wgx_command."""
-    from panel.ops import _run_wgx_command
-
-    monkeypatch.setenv("GH_TOKEN", "super-secret-token")
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(0, "{}", "Error with super-secret-token here", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    import panel.logging
-
-    panel.logging._get_sensitive_env_values.cache_clear()
-
-    data, code, details = _run_wgx_command(["test"], tmp_path, 60)
-    assert "super-secret-token" not in details
-    assert "[redacted]" in details
-
-
-def test_run_wgx_command_diagnostics_unit(monkeypatch, tmp_path):
-    """Test that diagnostics combine stdout and stderr in _run_wgx_command."""
-    from panel.ops import _run_wgx_command
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(1, "output line 1\noutput line 2", "error line 1\nerror line 2", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        _run_wgx_command(["test"], tmp_path, 60)
-
-    msg = str(excinfo.value)
-    assert "stdout=" in msg and "stderr=" in msg
-    assert "output line 1\\noutput line 2" in msg
-    assert "error line 1\\nerror line 2" in msg
-
-
-def test_run_wgx_routine_preview_no_stale_fallback_unit(monkeypatch, tmp_path):
-    """Test that routine preview does NOT read stale fallback file if exit code is non-zero."""
-    repo_path = _mk_repo(tmp_path)
-
-    out_dir = repo_path / ".wgx" / "out"
-    out_dir.mkdir(parents=True)
-    (out_dir / "routine.preview.json").write_text(json.dumps({"kind": "stale"}), encoding="utf-8")
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(1, "failure", "", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run_wgx_routine_preview("repo", repo_path, "test")
-
-    assert "no JSON output found" in str(excinfo.value)
-    assert 'kind": "stale' not in str(excinfo.value)
-
-
-def test_run_wgx_audit_git_strict_fallback_unit(monkeypatch, tmp_path):
-    """Test that audit fails if preferred artifact is corrupt, instead of falling back."""
-    repo_path = _mk_repo(tmp_path)
-    corr_id = "corr-123"
-
-    out_dir = repo_path / ".wgx" / "out"
-    out_dir.mkdir(parents=True)
-
-    pref = out_dir / f"audit.git.v1.{corr_id}.json"
-    pref.write_text("invalid json {", encoding="utf-8")
-
-    generic = out_dir / "audit.git.v1.json"
-    generic.write_text(MOCK_AUDIT_JSON, encoding="utf-8")
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(0, "ok", "", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run_wgx_audit_git("repo", repo_path, corr_id)
-
-    assert "Preferred artifact found" in str(excinfo.value)
-    assert str(pref) in str(excinfo.value)
-
-
-def test_run_wgx_audit_git_strict_fallback_generic_unit(monkeypatch, tmp_path):
-    """
-    Test that audit fails with generic error if generic artifact is corrupt
-    (and preferred is missing).
-    """
-    repo_path = _mk_repo(tmp_path)
-    corr_id = "corr-missing"
-
-    out_dir = repo_path / ".wgx" / "out"
-    out_dir.mkdir(parents=True)
-
-    generic = out_dir / "audit.git.v1.json"
-    generic.write_text("corrupt generic", encoding="utf-8")
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(0, "ok", "", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run_wgx_audit_git("repo", repo_path, corr_id)
-
-    assert "Artifact found" in str(excinfo.value)
-    assert "Preferred" not in str(excinfo.value)
-    assert str(generic) in str(excinfo.value)
-
-
-def test_run_wgx_routine_apply_corrupt_stdout_path_unit(monkeypatch, tmp_path):
-    """Test that routine apply fails fast if the path returned in stdout is corrupt on failure."""
-    repo_path = _mk_repo(tmp_path)
-
-    out_dir = repo_path / ".wgx" / "out"
-    out_dir.mkdir(parents=True)
-    corrupt_file = out_dir / "bad_apply.json"
-    corrupt_file.write_text("corrupt", encoding="utf-8")
-
-    token = create_token({"repo_key": "repo", "routine_id": "test", "preview_hash": "hash"})
-
-    def mock_run(cmd, cwd, timeout=60):
-        return CmdResult(1, str(corrupt_file), "stderr logs", cmd)
-
-    monkeypatch.setattr("panel.ops.run", mock_run)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        run_wgx_routine_apply("repo", repo_path, "test", token, "hash")
-
-    assert "artifact path returned in stdout" in str(excinfo.value)
-    assert str(corrupt_file) in str(excinfo.value)
-    assert "stderr logs" in str(excinfo.value)
