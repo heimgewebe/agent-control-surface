@@ -447,13 +447,18 @@ def check_routines_enabled(request: Request) -> None:
         )
 
     secret = os.getenv("ACS_ROUTINES_SHARED_SECRET", "").strip()
-    if secret:
-        token = request.headers.get("X-ACS-Actor-Token", "").strip()
-        if token != secret:
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid or missing X-ACS-Actor-Token header."
-            )
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail="ACS_ROUTINES_SHARED_SECRET is not configured. For security, routines require a secret when enabled."
+        )
+
+    token = request.headers.get("X-ACS-Actor-Token", "").strip()
+    if token != secret:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or missing X-ACS-Actor-Token header."
+        )
 
 
 @app.post("/api/routine/preview", response_class=JSONResponse)

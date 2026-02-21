@@ -17,6 +17,7 @@ SENSITIVE_ENV_KEYS = [
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "COHERE_API_KEY",
+    "ACS_ROUTINES_SHARED_SECRET",
 ]
 
 GHP_PATTERN = re.compile(r"ghp_[A-Za-z0-9]{20,}")
