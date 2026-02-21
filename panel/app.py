@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import threading
 import time
@@ -181,13 +182,24 @@ JobState.model_rebuild()
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         "index.html",
         {
             "request": request,
             "repos": allowed_repos(),
         },
     )
+    # CSRF protection for UI requests: acs_csrf cookie is checked against X-ACS-CSRF header.
+    # HttpOnly=False is required for the UI to read the cookie and send the header.
+    if not request.cookies.get("acs_csrf"):
+        response.set_cookie(
+            key="acs_csrf",
+            value=secrets.token_hex(16),
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            httponly=False,
+        )
+    return response
 
 
 @app.get("/api/sessions", response_class=PlainTextResponse)
@@ -447,13 +459,45 @@ def check_routines_enabled(request: Request) -> None:
         )
 
     secret = os.getenv("ACS_ROUTINES_SHARED_SECRET", "").strip()
-    if secret:
-        token = request.headers.get("X-ACS-Actor-Token", "").strip()
-        if token != secret:
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid or missing X-ACS-Actor-Token header."
-            )
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail="ACS_ROUTINES_SHARED_SECRET is not configured. For security, routines require a secret when enabled."
+        )
+
+    # Path A: Actor Path (Shared Secret)
+    actor_token = request.headers.get("X-ACS-Actor-Token", "").strip()
+    if actor_token:
+        if not secrets.compare_digest(actor_token, secret):
+            raise HTTPException(status_code=403, detail="Invalid X-ACS-Actor-Token header.")
+        return
+
+    # Path B: UI Path (CSRF + Same-Origin)
+    csrf_header = request.headers.get("X-ACS-CSRF", "").strip()
+    csrf_cookie = request.cookies.get("acs_csrf", "").strip()
+
+    if not csrf_header or not csrf_cookie or not secrets.compare_digest(csrf_header, csrf_cookie):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or missing authentication (X-ACS-Actor-Token or X-ACS-CSRF)."
+        )
+
+    # Strict same-origin check for UI path
+    origin = request.headers.get("Origin")
+    referer = request.headers.get("Referer")
+
+    # Trust ACS_PUBLIC_ORIGIN if set (useful behind reverse proxies)
+    public_origin = os.getenv("ACS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    base_url = public_origin or str(request.base_url).rstrip("/")
+
+    valid_origin = False
+    if origin and origin.rstrip("/") == base_url:
+        valid_origin = True
+    elif referer and referer.startswith(base_url):
+        valid_origin = True
+
+    if not valid_origin:
+        raise HTTPException(status_code=403, detail="Origin mismatch (UI access requires same-origin).")
 
 
 @app.post("/api/routine/preview", response_class=JSONResponse)

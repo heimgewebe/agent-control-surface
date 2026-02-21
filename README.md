@@ -120,9 +120,13 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
   - Default: `false`.
   - Setzen auf `true` aktiviert `/api/routine/preview` und `/api/routine/apply`.
   - **Sicherheitshinweis:** Nur aktivieren, wenn ACS in einem gesicherten Netz läuft oder hinter einem Auth-Proxy steht. Routinen führen Shell-Kommandos im Kontext des Users aus.
-- **`ACS_ROUTINES_SHARED_SECRET`** (Env): Optionales Shared Secret für Actor-Endpunkte.
-  - Wenn gesetzt, erfordern `/api/routine/preview` und `/api/routine/apply` den Header `X-ACS-Actor-Token: <secret>`.
-  - Empfohlen, wenn Routinen aktiviert sind, um CSRF oder versehentliche Aufrufe zu verhindern.
+- **`ACS_ROUTINES_SHARED_SECRET`** (Env): Shared Secret für Actor-Endpunkte.
+  - Erforderlich, wenn Routinen aktiviert sind.
+  - Authentifizierung erfolgt über zwei Pfade:
+    1. **Actor/API:** Header `X-ACS-Actor-Token: <secret>`.
+    2. **Web UI:** Automatischer CSRF-Schutz (Double-Submit Cookie) + Same-Origin Check.
+  - Das Secret dient als Hard-Gate: Wenn es nicht konfiguriert ist, bleiben Routinen deaktiviert (403).
+  - **Empfehlung:** Ein langes, zufälliges Secret verwenden (z.B. via `openssl rand -hex 32`).
 
 > **Wichtig:** Confirm-Tokens werden aktuell **in-memory** (pro Prozess) gespeichert. Bei einem Deployment mit mehreren Workern/Pods ist ein Token ungültig, wenn Preview und Apply auf unterschiedlichen Instanzen landen.
 
