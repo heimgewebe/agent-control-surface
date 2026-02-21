@@ -428,7 +428,7 @@ def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
 
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
     assert res.status_code == 403
-    assert "ACS_ROUTINES_SHARED_SECRET is not configured" in res.json()["detail"]
+    assert "ACS_ROUTINES_SHARED_SECRET" in res.json()["detail"]
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled."""
@@ -444,16 +444,29 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
         headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 200
-    assert "confirm_token" in res.json()
+    data = res.json()
+    assert "confirm_token" in data
+    assert "preview_hash" in data
+
+    # Apply (full API flow)
+    res = client.post(
+        "/api/routine/apply",
+        json={
+            "repo": "metarepo",
+            "id": "git.repair.remote-head",
+            "confirm_token": data["confirm_token"],
+            "preview_hash": data["preview_hash"]
+        },
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
 
 def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that api_routine_apply returns 409 if the routine reports ok=False."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
-
-    # We need a valid token first
-    _, token, p_hash = run_wgx_routine_preview("metarepo", mock_get_repo, "git.repair.remote-head")
 
     # Mock result with ok=False
     mock_fail_json = json.dumps({
@@ -467,17 +480,31 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "fail.test" in cmd:
+            if "preview" in cmd:
+                return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
             return CmdResult(0, mock_fail_json, "", cmd)
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    # Register token manually with hash
-    real_token = create_token({"repo_key": "metarepo", "routine_id": "fail.test", "preview_hash": "abc"})
+    # 1. Preview to get real token/hash
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "fail.test"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
+    assert res.status_code == 200
+    data = res.json()
 
+    # 2. Apply and expect conflict
     res = client.post(
         "/api/routine/apply",
-        json={"repo": "metarepo", "id": "fail.test", "confirm_token": real_token, "preview_hash": "abc"},
+        json={
+            "repo": "metarepo",
+            "id": "fail.test",
+            "confirm_token": data["confirm_token"],
+            "preview_hash": data["preview_hash"]
+        },
         headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 409
@@ -501,17 +528,32 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "invalid.test" in cmd:
+            if "preview" in cmd:
+                return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
             # Exit code 0 so ops layer passes it through, but content is invalid for API
             return CmdResult(0, mock_invalid_json, "", cmd)
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
 
-    real_token = create_token({"repo_key": "metarepo", "routine_id": "invalid.test", "preview_hash": "abc"})
+    # 1. Preview
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "invalid.test"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
+    assert res.status_code == 200
+    data = res.json()
 
+    # 2. Apply
     res = client.post(
         "/api/routine/apply",
-        json={"repo": "metarepo", "id": "invalid.test", "confirm_token": real_token, "preview_hash": "abc"},
+        json={
+            "repo": "metarepo",
+            "id": "invalid.test",
+            "confirm_token": data["confirm_token"],
+            "preview_hash": data["preview_hash"]
+        },
         headers={"X-ACS-Actor-Token": "testsecret"}
     )
     assert res.status_code == 500
