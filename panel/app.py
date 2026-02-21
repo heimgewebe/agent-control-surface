@@ -195,7 +195,7 @@ def index(request: Request) -> HTMLResponse:
         response.set_cookie(
             key="acs_csrf",
             value=secrets.token_hex(16),
-            samesite="lax",
+            samesite="strict",
             secure=request.url.scheme == "https",
             httponly=False,
         )

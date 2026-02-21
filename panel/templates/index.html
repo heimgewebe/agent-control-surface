@@ -1041,6 +1041,7 @@
               "Content-Type": "application/json",
               "X-ACS-CSRF": getCookie("acs_csrf") || ""
             },
+            credentials: "same-origin",
             body: JSON.stringify({ repo: repoValue, id: routineId }),
           });
           if (!res.ok) {
@@ -1072,6 +1073,7 @@
               "Content-Type": "application/json",
               "X-ACS-CSRF": getCookie("acs_csrf") || ""
             },
+            credentials: "same-origin",
             body: JSON.stringify({
               repo: repoValue,
               id: currentRoutineId,

@@ -194,10 +194,23 @@ def extract_json_from_stdout(stdout: str) -> Any | None:
 
 
 def _resolve_existing(path: Path, base_path: Path) -> Path | None:
-    if path.is_absolute():
-        return path if path.exists() else None
-    resolved = base_path / path
-    return resolved if resolved.exists() else None
+    """
+    Safely resolve a path relative to base_path, preventing traversal.
+    Returns None if the path does not exist or is outside base_path.
+    """
+    try:
+        # Resolve both to ensure comparison works
+        base_resolved = base_path.resolve()
+        if path.is_absolute():
+            resolved = path.resolve()
+        else:
+            resolved = (base_path / path).resolve()
+
+        if resolved.is_relative_to(base_resolved) and resolved.exists():
+            return resolved
+    except (ValueError, RuntimeError, OSError):
+        pass
+    return None
 
 
 def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
@@ -393,7 +406,7 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
                 pass
 
         if preview_data is None:
-            default_path = repo_path / ".wgx/out/routine.preview.json"
+            default_path = repo_path / ".wgx" / "out" / "routine.preview.json"
             if default_path.exists():
                 try:
                     with open(default_path, "r", encoding="utf-8") as f:
@@ -440,7 +453,7 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
                 pass
 
         if result_data is None:
-            default_path = repo_path / ".wgx/out/routine.result.json"
+            default_path = repo_path / ".wgx" / "out" / "routine.result.json"
             if default_path.exists():
                 try:
                     with open(default_path, "r", encoding="utf-8") as f:
