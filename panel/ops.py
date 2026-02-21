@@ -194,10 +194,14 @@ def extract_json_from_stdout(stdout: str) -> Any | None:
 
 
 def _resolve_existing(path: Path, base_path: Path) -> Path | None:
-    if path.is_absolute():
-        return path if path.exists() else None
-    resolved = base_path / path
-    return resolved if resolved.exists() else None
+    try:
+        if path.is_absolute():
+            return path if path.exists() else None
+        resolved = base_path / path
+        return resolved if resolved.exists() else None
+    except OSError:
+        # Handles "File name too long" or other OS-level issues for invalid/massive tokens
+        return None
 
 
 def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
@@ -205,18 +209,18 @@ def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
     stripped = stdout.strip()
 
     # Check if the whole line is a path
-    if stripped.endswith(".json"):
+    if 0 < len(stripped) < 4096 and stripped.endswith(".json"):
         resolved = _resolve_existing(Path(stripped), base_path)
         if resolved:
             return resolved
 
-    # Look for tokens ending in .json
-    tokens = re.split(r'\s+', stdout)
-    for token in tokens:
-        if token.endswith(".json"):
-            resolved = _resolve_existing(Path(token), base_path)
-            if resolved:
-                return resolved
+    # Look for tokens ending in .json using finditer for memory efficiency
+    # \S* matches 0 or more non-whitespace chars, ensuring we match even just ".json"
+    for match in re.finditer(r'\S*\.json(?!\S)', stdout):
+        token = match.group(0)
+        resolved = _resolve_existing(Path(token), base_path)
+        if resolved:
+            return resolved
 
     return None
 
