@@ -485,7 +485,10 @@ def check_routines_enabled(request: Request) -> None:
     # Strict same-origin check for UI path
     origin = request.headers.get("Origin")
     referer = request.headers.get("Referer")
-    base_url = str(request.base_url).rstrip("/")
+
+    # Trust ACS_PUBLIC_ORIGIN if set (useful behind reverse proxies)
+    public_origin = os.getenv("ACS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    base_url = public_origin or str(request.base_url).rstrip("/")
 
     valid_origin = False
     if origin and origin.rstrip("/") == base_url:

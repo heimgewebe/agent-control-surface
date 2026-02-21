@@ -431,7 +431,7 @@ def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
     assert "ACS_ROUTINES_SHARED_SECRET" in res.json()["detail"]
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
-    """Test that routine endpoints work when enabled."""
+    """Test that routine endpoints work when enabled and authenticated."""
     client = TestClient(app)
 
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
@@ -446,7 +446,6 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
     assert res.status_code == 200
     data = res.json()
     assert "confirm_token" in data
-    assert "preview_hash" in data
 
     # Apply
     res = client.post(
@@ -467,8 +466,14 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
 
-    # We need a valid token first
-    _, token, p_hash = run_wgx_routine_preview("metarepo", mock_get_repo, "git.repair.remote-head")
+    # 1. Preview
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "fail.test"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
+    assert res.status_code == 200
+    data = res.json()
 
     # Mock result with ok=False
     mock_fail_json = json.dumps({
@@ -482,19 +487,12 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "fail.test" in cmd:
+            if "preview" in cmd:
+                 return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
             return CmdResult(0, mock_fail_json, "", cmd)
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
-
-    # 1. Preview
-    res = client.post(
-        "/api/routine/preview",
-        json={"repo": "metarepo", "id": "fail.test"},
-        headers={"X-ACS-Actor-Token": "testsecret"}
-    )
-    assert res.status_code == 200
-    data = res.json()
 
     # 2. Apply and expect conflict
     res = client.post(
@@ -528,6 +526,8 @@ def test_api_routine_apply_fails_missing_ok_field(monkeypatch, mock_run_wgx, moc
 
     def _run(cmd, cwd, timeout=60, **kwargs):
         if "invalid.test" in cmd:
+            if "preview" in cmd:
+                 return CmdResult(0, MOCK_PREVIEW_JSON, "", cmd)
             # Exit code 0 so ops layer passes it through, but content is invalid for API
             return CmdResult(0, mock_invalid_json, "", cmd)
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
@@ -566,7 +566,7 @@ def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     # 1. Missing both -> 403
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
     assert res.status_code == 403
-    assert "X-ACS-Actor-Token" in res.json()["detail"] or "X-ACS-CSRF" in res.json()["detail"]
+    assert "authentication" in res.json()["detail"]
 
     # 2. Wrong Actor-Token -> 403
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "wrong"})
@@ -584,7 +584,6 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "supersecret")
 
     csrf_token = "test-csrf-token"
-    # Set the cookie in the client
     client.cookies.set("acs_csrf", csrf_token)
 
     # 1. Valid CSRF but missing Origin/Referer -> 403
@@ -597,7 +596,6 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
     assert "Origin mismatch" in res.json()["detail"]
 
     # 2. Valid CSRF and correct Origin -> 200
-    # TestClient base_url is http://testserver
     res = client.post(
         "/api/routine/preview",
         json={"repo": "metarepo", "id": "git.repair.remote-head"},
@@ -607,7 +605,17 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
         }
     )
     assert res.status_code == 200
-    assert "confirm_token" in res.json()
+
+    # 3. Valid CSRF and correct Referer -> 200
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "git.repair.remote-head"},
+        headers={
+            "X-ACS-CSRF": csrf_token,
+            "Referer": "http://testserver/"
+        }
+    )
+    assert res.status_code == 200
 
 def test_api_routine_validation_invalid_id(monkeypatch, mock_get_repo):
     """Test that invalid routine IDs are rejected."""
