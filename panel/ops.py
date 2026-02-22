@@ -203,7 +203,7 @@ def _resolve_existing(path: Path, base_path: Path) -> Path | None:
 
         if resolved.exists() and resolved.is_relative_to(base_abs):
             return resolved
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         pass
     return None
 
