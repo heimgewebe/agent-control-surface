@@ -205,8 +205,9 @@ def _resolve_existing(path: Path, base_path: Path) -> Path | None:
         if resolved.is_relative_to(base_abs) and resolved.exists():
             return resolved
         return None
-    except (OSError, ValueError):
-        # Handles "File name too long", null bytes, or other OS issues
+    except (OSError, ValueError, RuntimeError):
+        # Path.resolve may raise RuntimeError on symlink loops.
+        # Handles "File name too long", null bytes, or other OS issues.
         return None
 
 

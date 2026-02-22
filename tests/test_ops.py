@@ -665,3 +665,18 @@ def test_resolve_existing_traversal(tmp_path):
 
     # 3. Absolute path outside base fails
     assert _resolve_existing(outside.absolute(), base) is None
+
+def test_resolve_existing_symlink_loop(tmp_path):
+    from panel.ops import _resolve_existing
+    repo = tmp_path / "repo_loop"
+    repo.mkdir()
+    a = repo / "a.json"
+    b = repo / "b.json"
+    try:
+        a.symlink_to(b)
+        b.symlink_to(a)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported in this environment")
+
+    # Path.resolve() should raise RuntimeError on symlink loop, which we catch
+    assert _resolve_existing(Path("a.json"), repo) is None
