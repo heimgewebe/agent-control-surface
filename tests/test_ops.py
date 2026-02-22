@@ -792,3 +792,26 @@ def test_resolve_existing_traversal(tmp_path):
     resolved_abs = _resolve_existing(safe_file.resolve(), repo)
     assert resolved_abs is not None
     assert resolved_abs == safe_file.resolve()
+
+
+def test_resolve_existing_symlink_loop(tmp_path):
+    """Verify that _resolve_existing handles symlink loops gracefully."""
+    from panel.ops import _resolve_existing
+
+    repo = tmp_path / "repo_loop"
+    repo.mkdir()
+
+    link_a = repo / "link_a"
+    link_b = repo / "link_b"
+
+    # Create symlink loop: a -> b -> a
+    try:
+        link_a.symlink_to("link_b")
+        link_b.symlink_to("link_a")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this platform")
+
+    # Attempt to resolve loop
+    # Should catch RuntimeError and return None
+    res = _resolve_existing(Path("link_a"), repo)
+    assert res is None
