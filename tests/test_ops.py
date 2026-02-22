@@ -646,3 +646,22 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     assert result.ok is False
     assert result.error_kind == "internal"
     assert "WGX crashed" in result.message
+
+def test_resolve_existing_traversal(tmp_path):
+    from panel.ops import _resolve_existing
+    base = tmp_path / "repo"
+    base.mkdir()
+    safe_file = base / "safe.json"
+    safe_file.touch()
+
+    outside = tmp_path / "secret.json"
+    outside.touch()
+
+    # 1. Safe file works
+    assert _resolve_existing(Path("safe.json"), base) == safe_file.resolve()
+
+    # 2. Relative traversal fails
+    assert _resolve_existing(Path("../secret.json"), base) is None
+
+    # 3. Absolute path outside base fails
+    assert _resolve_existing(outside.absolute(), base) is None
