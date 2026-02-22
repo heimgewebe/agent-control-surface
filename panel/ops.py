@@ -194,29 +194,49 @@ def extract_json_from_stdout(stdout: str) -> Any | None:
 
 
 def _resolve_existing(path: Path, base_path: Path) -> Path | None:
-    if path.is_absolute():
-        return path if path.exists() else None
-    resolved = base_path / path
-    return resolved if resolved.exists() else None
+    try:
+        base_abs = base_path.resolve()
+        if path.is_absolute():
+            resolved = path.resolve()
+        else:
+            resolved = (base_abs / path).resolve()
+
+        if resolved.exists() and resolved.is_relative_to(base_abs):
+            return resolved
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
     """Attempts to find a valid file path in stdout (e.g., ending in .json)."""
+    if not stdout:
+        return None
+
     stripped = stdout.strip()
 
     # Check if the whole line is a path
-    if stripped.endswith(".json"):
-        resolved = _resolve_existing(Path(stripped), base_path)
-        if resolved:
-            return resolved
-
-    # Look for tokens ending in .json
-    tokens = re.split(r'\s+', stdout)
-    for token in tokens:
-        if token.endswith(".json"):
-            resolved = _resolve_existing(Path(token), base_path)
+    if 0 < len(stripped) < 4096 and stripped.endswith(".json"):
+        try:
+            resolved = _resolve_existing(Path(stripped), base_path)
             if resolved:
                 return resolved
+        except OSError:
+            pass
+
+    # Look for tokens ending in .json
+    for match in re.finditer(r'\S+', stdout):
+        token = match.group(0)
+        if len(token) >= 4096:
+            continue
+
+        if token.endswith(".json"):
+            try:
+                resolved = _resolve_existing(Path(token), base_path)
+                if resolved:
+                    return resolved
+            except OSError:
+                pass
 
     return None
 
