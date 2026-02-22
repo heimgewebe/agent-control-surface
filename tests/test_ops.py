@@ -761,6 +761,30 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     assert result.error_kind == "internal"
     assert "WGX crashed" in result.message
 
+def test_extract_path_from_stdout_robustness(tmp_path):
+    """Test robustness against large tokens and null bytes in extract_path_from_stdout."""
+    from panel.ops import extract_path_from_stdout
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    safe_file = repo / "safe.json"
+    safe_file.touch()
+
+    # 1. Normal file works
+    assert extract_path_from_stdout(f"Output: {safe_file.name}", repo) == safe_file.resolve()
+
+    # 2. Null byte in token -> ignored
+    bad_token = f"safe.json\x00"
+    assert extract_path_from_stdout(f"Output: {bad_token}", repo) is None
+
+    # 3. Oversized token -> ignored
+    long_name = "a" * 4096 + ".json"
+    assert extract_path_from_stdout(f"Output: {long_name}", repo) is None
+
+    # 4. Valid token amidst noise works
+    assert extract_path_from_stdout(f"Noise {long_name} more noise {safe_file.name}", repo) == safe_file.resolve()
+
+
 def test_resolve_existing_traversal(tmp_path):
     """Verify that _resolve_existing prevents path traversal."""
     from panel.ops import _resolve_existing

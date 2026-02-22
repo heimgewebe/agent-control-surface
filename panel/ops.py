@@ -201,11 +201,14 @@ def _resolve_existing(path: Path, base_path: Path) -> Path | None:
         else:
             resolved = (base_abs / path).resolve()
 
-        if resolved.exists() and resolved.is_relative_to(base_abs):
+        # Security: only allow files inside base_path
+        if resolved.is_relative_to(base_abs) and resolved.exists():
             return resolved
+        return None
     except (OSError, ValueError, RuntimeError):
-        pass
-    return None
+        # Path.resolve may raise RuntimeError on symlink loops.
+        # Handles "File name too long", null bytes, or other OS issues.
+        return None
 
 
 def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
@@ -217,26 +220,20 @@ def extract_path_from_stdout(stdout: str, base_path: Path) -> Path | None:
 
     # Check if the whole line is a path
     if 0 < len(stripped) < 4096 and stripped.endswith(".json"):
-        try:
-            resolved = _resolve_existing(Path(stripped), base_path)
-            if resolved:
-                return resolved
-        except OSError:
-            pass
+        resolved = _resolve_existing(Path(stripped), base_path)
+        if resolved:
+            return resolved
 
-    # Look for tokens ending in .json
-    for match in re.finditer(r'\S+', stdout):
+    # Look for tokens ending in .json using finditer for memory efficiency
+    # \S* matches 0 or more non-whitespace chars, ensuring we match even just ".json"
+    for match in re.finditer(r'\S*\.json(?!\S)', stdout):
         token = match.group(0)
-        if len(token) >= 4096:
+        # Robustness: skip oversized tokens or tokens with null bytes
+        if len(token) >= 4096 or "\x00" in token:
             continue
-
-        if token.endswith(".json"):
-            try:
-                resolved = _resolve_existing(Path(token), base_path)
-                if resolved:
-                    return resolved
-            except OSError:
-                pass
+        resolved = _resolve_existing(Path(token), base_path)
+        if resolved:
+            return resolved
 
     return None
 
