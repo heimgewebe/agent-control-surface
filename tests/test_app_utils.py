@@ -1,10 +1,21 @@
 import pytest
+import shlex
 from panel.utils import format_command_line, truncate_text, combine_output, classify_git_ref_error
 
 def test_format_command_line():
-    assert format_command_line(["ls", "-l"]) == "$ ls -l"
-    assert format_command_line(["echo", "hello world"]) == "$ echo 'hello world'"
-    assert format_command_line(["git", "commit", "-m", "feat: something"]) == "$ git commit -m 'feat: something'"
+    # Simple command
+    cmd1 = ["ls", "-l"]
+    assert format_command_line(cmd1) == f"$ {shlex.join(cmd1)}"
+
+    # Command with spaces
+    cmd2 = ["echo", "hello world"]
+    assert format_command_line(cmd2) == f"$ {shlex.join(cmd2)}"
+
+    # Complex command
+    cmd3 = ["git", "commit", "-m", "feat: something"]
+    assert format_command_line(cmd3) == f"$ {shlex.join(cmd3)}"
+
+    # Empty command
     assert format_command_line([]) == "$ "
 
 

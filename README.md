@@ -36,6 +36,16 @@ Start lokal:
 uvicorn panel.app:app --host 127.0.0.1 --port 8099
 ```
 
+## Testing
+
+Run unit tests from the repository root:
+
+```bash
+pytest
+```
+
+Note: Pure utility tests (like `tests/test_app_utils.py`) can run without all dependencies installed, but full app tests require the environment to be set up as described in the Installation section.
+
 ## systemd User Service
 
 ```bash
