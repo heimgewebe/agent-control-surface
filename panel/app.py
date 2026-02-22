@@ -22,6 +22,14 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
+from .utils import (
+    GitRefError,
+    classify_git_ref_error,
+    combine_output,
+    format_command_line,
+    is_valid_branch_name,
+    truncate_text,
+)
 from .ops import (
     AuditGit,
     get_latest_audit_artifact,
@@ -514,61 +522,6 @@ def api_job_status(job_id: str) -> JSONResponse:
 # - /api/patch/apply returns a structured ActionResult and makes no-ops explicit.
 # - Other git endpoints currently expose stdout/stderr as part of an interactive wizard flow.
 #   A future PR can normalize this into structured responses + non-2xx statuses.
-def combine_output(result: Any) -> str:
-    output = result.stdout or ""
-    if result.stderr:
-        output = f"{output}\n{result.stderr}" if output else result.stderr
-    return output
-
-
-class GitRefError(TypedDict):
-    error_kind: str
-    hint: str
-    affected_ref: str | None
-
-
-def classify_git_ref_error(stderr: str) -> GitRefError | None:
-    if not stderr:
-        return None
-    match = re.search(r"cannot lock ref '([^']+)'", stderr)
-    if match:
-        return {
-            "error_kind": "ref_lock",
-            "hint": "Unable to lock local ref; remote tracking refs may be inconsistent.",
-            "affected_ref": match.group(1),
-        }
-    match = re.search(r"unable to resolve reference '([^']+)'", stderr)
-    if match:
-        return {
-            "error_kind": "resolve_ref_failed",
-            "hint": "Unable to resolve local ref; remote tracking refs may be inconsistent.",
-            "affected_ref": match.group(1),
-        }
-    match = re.search(r"([A-Za-z0-9._/-]+) has become dangling", stderr)
-    if match:
-        return {
-            "error_kind": "dangling_ref",
-            "hint": "Local ref has become dangling; remote tracking refs may be inconsistent.",
-            "affected_ref": match.group(1),
-        }
-    lowered = stderr.lower()
-    if "packed refs" in lowered and "corrupt" in lowered:
-        return {
-            "error_kind": "ref_repair_failed",
-            "hint": "Packed refs appear corrupt; repacking refs may be required.",
-            "affected_ref": None,
-        }
-    return None
-
-
-def format_command_line(cmd: list[str]) -> str:
-    return f"$ {shlex.join(cmd)}"
-
-
-def truncate_text(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}… (truncated)"
 
 
 def run_git_command_sequence(
@@ -758,16 +711,6 @@ def git_status_porcelain(path: Path) -> list[str]:
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
-def is_valid_branch_name(name: str) -> bool:
-    if not name or " " in name:
-        return False
-    if name.startswith("-") or name.endswith(".lock"):
-        return False
-    if ".." in name or "@" in name or "~" in name or ":" in name or "\\" in name:
-        return False
-    if "//" in name or "/." in name or "./" in name:
-        return False
-    return bool(re.fullmatch(r"[A-Za-z0-9._/-]+", name))
 
 
 def get_status_files(lines: list[str]) -> list[str]:
