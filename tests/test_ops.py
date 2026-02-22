@@ -460,21 +460,8 @@ def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, m
     )
     assert res.status_code == 200
 
-def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_repo):
+def test_api_routine_apply_fails_conflict(monkeypatch, mock_get_repo):
     """Test that api_routine_apply returns 409 if the routine reports ok=False."""
-    client = TestClient(app)
-    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
-    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
-
-    # 1. Preview
-    res = client.post(
-        "/api/routine/preview",
-        json={"repo": "metarepo", "id": "fail.test"},
-        headers={"X-ACS-Actor-Token": "testsecret"}
-    )
-    assert res.status_code == 200
-    data = res.json()
-
     # Mock result with ok=False
     mock_fail_json = json.dumps({
         "kind": "routine.result",
@@ -493,6 +480,19 @@ def test_api_routine_apply_fails_conflict(monkeypatch, mock_run_wgx, mock_get_re
         return CmdResult(0, MOCK_RESULT_JSON, "", cmd)
 
     monkeypatch.setattr("panel.ops.run", _run)
+
+    client = TestClient(app)
+    monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "testsecret")
+
+    # 1. Preview
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "fail.test"},
+        headers={"X-ACS-Actor-Token": "testsecret"}
+    )
+    assert res.status_code == 200
+    data = res.json()
 
     # 2. Apply and expect conflict
     res = client.post(
@@ -760,3 +760,35 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     assert result.ok is False
     assert result.error_kind == "internal"
     assert "WGX crashed" in result.message
+
+def test_resolve_existing_traversal(tmp_path):
+    """Verify that _resolve_existing prevents path traversal."""
+    from panel.ops import _resolve_existing
+
+    # Setup
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    # Create files
+    safe_file = repo / "safe.json"
+    safe_file.write_text("{}", encoding="utf-8")
+
+    secret_file = tmp_path / "secret.json"
+    secret_file.write_text("{}", encoding="utf-8")
+
+    # Test a) Path("../secret.json") -> None
+    # relative path traversing up
+    assert _resolve_existing(Path("../secret.json"), repo) is None
+
+    # Test b) absolute secret outside base -> None
+    assert _resolve_existing(secret_file.resolve(), repo) is None
+
+    # Test c) Path("safe.json") in base -> not None
+    resolved = _resolve_existing(Path("safe.json"), repo)
+    assert resolved is not None
+    assert resolved == safe_file.resolve()
+
+    # Test d) Absolute path inside base -> not None
+    resolved_abs = _resolve_existing(safe_file.resolve(), repo)
+    assert resolved_abs is not None
+    assert resolved_abs == safe_file.resolve()
