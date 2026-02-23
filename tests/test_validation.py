@@ -1,4 +1,4 @@
-from panel.app import is_valid_branch_name
+from panel.utils import is_valid_branch_name
 
 def test_valid_branch_names():
     assert is_valid_branch_name("feature/abc")

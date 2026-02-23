@@ -36,6 +36,24 @@ Start lokal:
 uvicorn panel.app:app --host 127.0.0.1 --port 8099
 ```
 
+## Testing
+
+### Dependency-free unit tests
+These tests run without requiring a full environment setup (no `fastapi` needed):
+
+```bash
+pytest -q tests/test_app_utils.py tests/test_validation.py
+```
+
+### Full test suite
+Runs all tests, including those requiring the full environment and dependencies:
+
+```bash
+pytest
+```
+
+Note: Full app tests require the environment to be set up as described in the Installation section.
+
 ## systemd User Service
 
 ```bash
