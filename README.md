@@ -38,13 +38,21 @@ uvicorn panel.app:app --host 127.0.0.1 --port 8099
 
 ## Testing
 
-Run unit tests from the repository root:
+### Dependency-free unit tests
+These tests run without requiring a full environment setup (no `fastapi` needed):
+
+```bash
+pytest -q tests/test_app_utils.py tests/test_validation.py
+```
+
+### Full test suite
+Runs all tests, including those requiring the full environment and dependencies:
 
 ```bash
 pytest
 ```
 
-Note: Pure utility tests (like `tests/test_app_utils.py`) can run without all dependencies installed, but full app tests require the environment to be set up as described in the Installation section.
+Note: Full app tests require the environment to be set up as described in the Installation section.
 
 ## systemd User Service
 
