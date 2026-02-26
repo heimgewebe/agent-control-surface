@@ -39,7 +39,7 @@ from .ops import (
     run_wgx_routine_apply,
 )
 from .repos import Repo, allowed_repos, repo_by_key
-from .runner import assert_not_main_branch, run
+from .runner import CmdResult, assert_not_main_branch, run
 
 app = FastAPI(title="agent-control-surface")
 
@@ -284,7 +284,7 @@ def api_git_diff(repo: str = Query(...)) -> str:
     return combine_output(out)
 
 
-def git_stage_files(repo_path: Path, files: list[str] | None):
+def git_stage_files(repo_path: Path, files: list[str] | None) -> CmdResult:
     """
     Safely stage files for commit.
     - None: default to 'git add -u' (only modified/deleted tracked files)
@@ -1269,7 +1269,20 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         )
         log_action_result(result)
         return result, 409
-    add = git_stage_files(target.path, req.files)
+    try:
+        add = git_stage_files(target.path, req.files)
+    except HTTPException as e:
+        result = build_action_result(
+            ok=False,
+            action="git.add",
+            repo=target.key,
+            correlation_id=correlation_id,
+            error_kind="validation",
+            message=str(e.detail),
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, e.status_code
     if add.code != 0:
         result = build_action_result(
             ok=False,
@@ -1757,7 +1770,20 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             record_job_result(job_id, result)
             return False
         commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
-        add = git_stage_files(target.path, req.files)
+        try:
+            add = git_stage_files(target.path, req.files)
+        except HTTPException as e:
+            add_result = build_action_result(
+                ok=False,
+                action="git.add",
+                repo=target.key,
+                correlation_id=correlation_id,
+                error_kind="validation",
+                message=str(e.detail),
+                repo_path=target.path,
+            )
+            record_job_result(job_id, add_result)
+            return False
         add_result = build_action_result(
             ok=add.code == 0,
             action="git.add",

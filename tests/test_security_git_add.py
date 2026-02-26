@@ -1,4 +1,8 @@
 import pytest
+
+# Skip this test if fastapi is not installed (prevents collection errors in minimal environments)
+pytest.importorskip("fastapi")
+
 from pathlib import Path
 from fastapi.testclient import TestClient
 from panel.app import app
