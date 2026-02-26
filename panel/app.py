@@ -116,6 +116,7 @@ class GitBranchReq(BaseModel):
 class GitCommitReq(BaseModel):
     repo: str
     message: str
+    files: list[str] | None = None
 
 
 class GitPushReq(BaseModel):
@@ -150,6 +151,7 @@ class PublishOptions(BaseModel):
     base: str = "main"
     draft: bool = True
     include_diffstat: bool = True
+    files: list[str] | None = None
 
 
 class PublishReq(PublishOptions):
@@ -288,7 +290,10 @@ def api_git_commit(req: GitCommitReq) -> str:
     assert_branch_guard(target.path)
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Commit message required")
-    run(["git", "add", "-A"], cwd=target.path, timeout=60)
+    if req.files:
+        run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
+    else:
+        run(["git", "add", "-u"], cwd=target.path, timeout=60)
     out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
     return combine_output(out)
 
@@ -1253,7 +1258,10 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         )
         log_action_result(result)
         return result, 409
-    add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
+    if req.files:
+        add = run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
+    else:
+        add = run(["git", "add", "-u"], cwd=target.path, timeout=60)
     if add.code != 0:
         result = build_action_result(
             ok=False,
@@ -1741,7 +1749,10 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             record_job_result(job_id, result)
             return False
         commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
-        add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
+        if req.files:
+            add = run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
+        else:
+            add = run(["git", "add", "-u"], cwd=target.path, timeout=60)
         add_result = build_action_result(
             ok=add.code == 0,
             action="git.add",
