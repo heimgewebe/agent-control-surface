@@ -93,3 +93,24 @@ def test_git_commit_empty_files_list_error(mock_get_repo):
     )
     assert response.status_code == 400
     assert "No files specified" in response.json()["detail"]
+
+
+def test_git_commit_add_failure(mock_get_repo, monkeypatch):
+    client = TestClient(app)
+    repo_path = mock_get_repo
+
+    from panel.runner import CmdResult
+
+    def mock_run_fail(cmd, cwd, timeout=60, **kwargs):
+        if "add" in cmd:
+            return CmdResult(1, "", "Staging failed", cmd)
+        return runner_run(cmd, cwd=cwd, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr("panel.app.run", mock_run_fail)
+
+    response = client.post(
+        "/api/git/commit",
+        json={"repo": "test-repo", "message": "Should fail at staging"}
+    )
+    assert response.status_code == 500
+    assert "Staging failed" in response.text

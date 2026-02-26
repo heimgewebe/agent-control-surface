@@ -304,7 +304,9 @@ def api_git_commit(req: GitCommitReq) -> str:
     assert_branch_guard(target.path)
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Commit message required")
-    git_stage_files(target.path, req.files)
+    add = git_stage_files(target.path, req.files)
+    if add.code != 0:
+        raise HTTPException(status_code=500, detail=combine_output(add))
     out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
     return combine_output(out)
 
