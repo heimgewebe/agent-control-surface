@@ -284,16 +284,27 @@ def api_git_diff(repo: str = Query(...)) -> str:
     return combine_output(out)
 
 
+def git_stage_files(repo_path: Path, files: list[str] | None):
+    """
+    Safely stage files for commit.
+    - None: default to 'git add -u' (only modified/deleted tracked files)
+    - []: raise 400 (intent signal: stage nothing)
+    - list: 'git add -- <files>' (can include untracked)
+    """
+    if files is None:
+        return run(["git", "add", "-u"], cwd=repo_path, timeout=60)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files specified")
+    return run(["git", "add", "--"] + files, cwd=repo_path, timeout=60)
+
+
 @app.post("/api/git/commit", response_class=PlainTextResponse)
 def api_git_commit(req: GitCommitReq) -> str:
     target = get_repo(req.repo)
     assert_branch_guard(target.path)
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Commit message required")
-    if req.files:
-        run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
-    else:
-        run(["git", "add", "-u"], cwd=target.path, timeout=60)
+    git_stage_files(target.path, req.files)
     out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
     return combine_output(out)
 
@@ -1258,10 +1269,7 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         )
         log_action_result(result)
         return result, 409
-    if req.files:
-        add = run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
-    else:
-        add = run(["git", "add", "-u"], cwd=target.path, timeout=60)
+    add = git_stage_files(target.path, req.files)
     if add.code != 0:
         result = build_action_result(
             ok=False,
@@ -1749,10 +1757,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             record_job_result(job_id, result)
             return False
         commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
-        if req.files:
-            add = run(["git", "add", "--"] + req.files, cwd=target.path, timeout=60)
-        else:
-            add = run(["git", "add", "-u"], cwd=target.path, timeout=60)
+        add = git_stage_files(target.path, req.files)
         add_result = build_action_result(
             ok=add.code == 0,
             action="git.add",

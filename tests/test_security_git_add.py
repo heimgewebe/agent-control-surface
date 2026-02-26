@@ -1,9 +1,9 @@
-import os
 import pytest
 from pathlib import Path
 from fastapi.testclient import TestClient
 from panel.app import app
 from panel.runner import run as runner_run
+
 
 def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
     p = tmp_path / name
@@ -19,10 +19,12 @@ def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
     runner_run(["git", "checkout", "-b", "feature"], cwd=p)
     return p
 
+
 @pytest.fixture
 def mock_get_repo(monkeypatch, tmp_path):
     from panel.repos import Repo
     repo_path = _mk_repo(tmp_path, "test-repo")
+
     def _get_repo(key):
         if key == "test-repo":
             return Repo(key=key, path=repo_path, display=f"mock/{key}")
@@ -30,6 +32,7 @@ def mock_get_repo(monkeypatch, tmp_path):
 
     monkeypatch.setattr("panel.app.get_repo", _get_repo)
     return repo_path
+
 
 def test_git_commit_safety(mock_get_repo):
     client = TestClient(app)
@@ -47,7 +50,7 @@ def test_git_commit_safety(mock_get_repo):
     secret_file = repo_path / ".env"
     secret_file.write_text("SECRET_TOKEN=12345")
 
-    # 3. Call the commit API without explicit files
+    # 3. Call the commit API without explicit files (None)
     response = client.post(
         "/api/git/commit",
         json={"repo": "test-repo", "message": "Commit modified but not untracked"}
@@ -55,11 +58,13 @@ def test_git_commit_safety(mock_get_repo):
     assert response.status_code == 200
 
     # 4. Verify that the tracked file is committed (no longer shows as modified)
-    status = runner_run(["git", "status", "--porcelain"], cwd=repo_path).stdout
+    status_raw = runner_run(["git", "status", "--porcelain"], cwd=repo_path).stdout
+    status_lines = [line.strip() for line in status_raw.splitlines() if line.strip()]
+
     # Modified tracked file should be gone from status (if committed)
     # Untracked file should still be there as ??
-    assert "?? .env" in status
-    assert "M tracked.txt" not in status
+    assert any(line.startswith("??") and line.endswith(".env") for line in status_lines)
+    assert not any(line.endswith("tracked.txt") for line in status_lines)
 
     # 5. Now try to commit the secret explicitly
     response = client.post(
@@ -69,6 +74,18 @@ def test_git_commit_safety(mock_get_repo):
     assert response.status_code == 200
 
     # 6. Verify that the secret is now committed
-    status = runner_run(["git", "status", "--porcelain"], cwd=repo_path).stdout
-    assert "?? .env" not in status
-    assert ".env" not in status # Should be clean
+    status_raw = runner_run(["git", "status", "--porcelain"], cwd=repo_path).stdout
+    status_lines = [line.strip() for line in status_raw.splitlines() if line.strip()]
+    assert not any(line.endswith(".env") for line in status_lines)
+
+
+def test_git_commit_empty_files_list_error(mock_get_repo):
+    client = TestClient(app)
+
+    # Sending [] should result in 400
+    response = client.post(
+        "/api/git/commit",
+        json={"repo": "test-repo", "message": "Should fail", "files": []}
+    )
+    assert response.status_code == 400
+    assert "No files specified" in response.json()["detail"]
