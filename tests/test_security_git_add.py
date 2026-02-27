@@ -102,7 +102,7 @@ def test_git_commit_add_failure(mock_get_repo, monkeypatch):
     from panel.runner import CmdResult
 
     def mock_run_fail(cmd, cwd, timeout=60, **kwargs):
-        if "add" in cmd:
+        if len(cmd) >= 2 and cmd[0:2] == ["git", "add"]:
             return CmdResult(1, "", "Staging failed", cmd)
         return runner_run(cmd, cwd=cwd, timeout=timeout, **kwargs)
 
