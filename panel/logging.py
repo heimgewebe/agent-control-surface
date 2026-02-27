@@ -138,16 +138,10 @@ def redact_record(value: Any) -> Any:
 
 @lru_cache(maxsize=1)
 def _get_sensitive_env_values() -> tuple[str, ...]:
-    values = []
-    for key in SENSITIVE_ENV_KEYS:
-        env_value = os.getenv(key)
-        if env_value:
-            values.append(env_value)
     # Deduplicate and sort by length descending to handle substring overlaps
     # (e.g. ensure "token123" is redacted before "token")
-    unique_values = list(dict.fromkeys(values))
-    unique_values.sort(key=len, reverse=True)
-    return tuple(unique_values)
+    values = {val for key in SENSITIVE_ENV_KEYS if (val := os.getenv(key))}
+    return tuple(sorted(values, key=len, reverse=True))
 
 
 def _get_sensitive_pattern() -> re.Pattern | None:
@@ -155,8 +149,7 @@ def _get_sensitive_pattern() -> re.Pattern | None:
     if not values:
         return None
     # Escape values to treat them as literal strings in regex, then join with |
-    # Sort by length descending (longest-first) to prevent partial matches
-    values = sorted(values, key=len, reverse=True)
+    # (Values are already sorted by length descending in _get_sensitive_env_values)
     pattern_str = "|".join(map(re.escape, values))
     return re.compile(pattern_str)
 
