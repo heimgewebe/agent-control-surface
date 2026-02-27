@@ -39,7 +39,7 @@ from .ops import (
     run_wgx_routine_apply,
 )
 from .repos import Repo, allowed_repos, repo_by_key
-from .runner import CmdResult, assert_not_main_branch, run
+from .runner import assert_not_main_branch, run
 
 app = FastAPI(title="agent-control-surface")
 
@@ -116,7 +116,6 @@ class GitBranchReq(BaseModel):
 class GitCommitReq(BaseModel):
     repo: str
     message: str
-    files: list[str] | None = None
 
 
 class GitPushReq(BaseModel):
@@ -151,7 +150,6 @@ class PublishOptions(BaseModel):
     base: str = "main"
     draft: bool = True
     include_diffstat: bool = True
-    files: list[str] | None = None
 
 
 class PublishReq(PublishOptions):
@@ -284,29 +282,13 @@ def api_git_diff(repo: str = Query(...)) -> str:
     return combine_output(out)
 
 
-def git_stage_files(repo_path: Path, files: list[str] | None) -> CmdResult:
-    """
-    Safely stage files for commit.
-    - None: default to 'git add -u' (only modified/deleted tracked files)
-    - []: raise 400 (intent signal: stage nothing)
-    - list: 'git add -- <files>' (can include untracked)
-    """
-    if files is None:
-        return run(["git", "add", "-u"], cwd=repo_path, timeout=60)
-    if not files:
-        raise HTTPException(status_code=400, detail="No files specified")
-    return run(["git", "add", "--"] + files, cwd=repo_path, timeout=60)
-
-
 @app.post("/api/git/commit", response_class=PlainTextResponse)
 def api_git_commit(req: GitCommitReq) -> str:
     target = get_repo(req.repo)
     assert_branch_guard(target.path)
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Commit message required")
-    add = git_stage_files(target.path, req.files)
-    if add.code != 0:
-        raise HTTPException(status_code=500, detail=combine_output(add))
+    run(["git", "add", "-A"], cwd=target.path, timeout=60)
     out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
     return combine_output(out)
 
@@ -1271,20 +1253,7 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         )
         log_action_result(result)
         return result, 409
-    try:
-        add = git_stage_files(target.path, req.files)
-    except HTTPException as e:
-        result = build_action_result(
-            ok=False,
-            action="git.add",
-            repo=target.key,
-            correlation_id=correlation_id,
-            error_kind="validation",
-            message=str(e.detail),
-            repo_path=target.path,
-        )
-        log_action_result(result)
-        return result, e.status_code
+    add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
     if add.code != 0:
         result = build_action_result(
             ok=False,
@@ -1772,20 +1741,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             record_job_result(job_id, result)
             return False
         commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
-        try:
-            add = git_stage_files(target.path, req.files)
-        except HTTPException as e:
-            add_result = build_action_result(
-                ok=False,
-                action="git.add",
-                repo=target.key,
-                correlation_id=correlation_id,
-                error_kind="validation",
-                message=str(e.detail),
-                repo_path=target.path,
-            )
-            record_job_result(job_id, add_result)
-            return False
+        add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
         add_result = build_action_result(
             ok=add.code == 0,
             action="git.add",
