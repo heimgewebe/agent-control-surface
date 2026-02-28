@@ -24,11 +24,13 @@ from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
 from .utils import (
+    MAX_OUTPUT_CHARS,
     GitRefError,
     classify_git_ref_error,
     combine_output,
     format_command_line,
     is_valid_branch_name,
+    run_git_command_sequence,
     truncate_text,
 )
 from .ops import (
@@ -80,7 +82,6 @@ JOB_MAX_AGE_SECONDS = 24 * 60 * 60
 JOB_MAX_ENTRIES = 200
 MAX_JOB_LOG_LINES = 1000
 MAX_LOG_LINE_CHARS = 4000
-MAX_OUTPUT_CHARS = 50000
 # Backwards-compatible alias for older imports.
 MAX_STDOUT_CHARS = MAX_OUTPUT_CHARS
 LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
@@ -568,46 +569,6 @@ def api_job_status(job_id: str) -> JSONResponse:
 #   A future PR can normalize this into structured responses + non-2xx statuses.
 
 
-def run_git_command_sequence(
-    path: Path,
-    commands: list[list[str]],
-    *,
-    timeout: int,
-    allow_failures: set[int] | None = None,
-    allow_failure_cmds: set[tuple[str, ...]] | None = None,
-    stop_on_error: bool = False,
-) -> tuple[bool, str, str, int | None, list[str]]:
-    """Run a list of commands, allowing optional failures by index (legacy) or command."""
-    allow_failures = allow_failures or set()
-    allow_failure_cmds = allow_failure_cmds or set()
-    combined_stdout: list[str] = []
-    combined_stderr: list[str] = []
-    optional_failures: list[str] = []
-    ok = True
-    last_code: int | None = None
-    for idx, cmd in enumerate(commands):
-        result = run(cmd, cwd=path, timeout=timeout)
-        last_code = result.code
-        cmd_line = format_command_line(list(cmd))
-        cmd_key = tuple(cmd)
-        stdout_lines = [cmd_line]
-        stdout_value = truncate_text(result.stdout.strip(), 20000) if result.stdout else ""
-        if stdout_value:
-            stdout_lines.append(stdout_value)
-        combined_stdout.append("\n".join(stdout_lines))
-        stderr_value = truncate_text(result.stderr.strip(), 20000) if result.stderr else ""
-        if stderr_value:
-            combined_stderr.append("\n".join([cmd_line, stderr_value]))
-        if result.code != 0:
-            if idx in allow_failures or cmd_key in allow_failure_cmds:
-                optional_failures.append(cmd_line)
-            else:
-                ok = False
-                if stop_on_error:
-                    break
-    stdout_combined = truncate_text("\n\n".join(combined_stdout), MAX_OUTPUT_CHARS)
-    stderr_combined = truncate_text("\n\n".join(combined_stderr), MAX_OUTPUT_CHARS)
-    return ok, stdout_combined, stderr_combined, last_code, optional_failures
 
 
 def get_remote_protocol(remote_url: str) -> str:
