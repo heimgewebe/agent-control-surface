@@ -41,7 +41,7 @@ def test_classify_git_ref_error_patterns() -> None:
 
 def test_repair_stage_a_runs_prune_and_fetch() -> None:
     target = MagicMock(key="metarepo", path=Path("/tmp/mock"))
-    with patch("panel.app.run") as mock_run:
+    with patch("panel.utils.run") as mock_run:
         mock_run.side_effect = [
             CmdResult(code=0, stdout="pruned", stderr="", cmd=[]),
             CmdResult(code=0, stdout="fetched", stderr="", cmd=[]),
@@ -55,7 +55,7 @@ def test_repair_stage_a_runs_prune_and_fetch() -> None:
 
 def test_repair_stage_b_allows_missing_refs() -> None:
     target = MagicMock(key="metarepo", path=Path("/tmp/mock"))
-    with patch("panel.app.run") as mock_run:
+    with patch("panel.utils.run") as mock_run:
         mock_run.side_effect = [
             CmdResult(code=1, stdout="", stderr="missing", cmd=[]),
             CmdResult(code=1, stdout="", stderr="missing", cmd=[]),
@@ -81,7 +81,7 @@ def test_repair_stage_b_allows_missing_refs() -> None:
 
 def test_repair_stage_b_rejects_invalid_base_branch() -> None:
     target = MagicMock(key="metarepo", path=Path("/tmp/mock"))
-    with patch("panel.app.run") as mock_run, \
+    with patch("panel.utils.run") as mock_run, \
          patch("panel.app.get_git_state", return_value=("main", "abc")):
         result = git_remote_repair_stage_b(target, "corr-1", "invalid branch", True)
 
@@ -94,7 +94,7 @@ def test_repair_stage_b_rejects_invalid_base_branch() -> None:
 
 def test_repair_stage_c_runs_pack_refs_and_fetch() -> None:
     target = MagicMock(key="metarepo", path=Path("/tmp/mock"))
-    with patch("panel.app.run") as mock_run:
+    with patch("panel.utils.run") as mock_run:
         mock_run.side_effect = [
             CmdResult(code=0, stdout="packed", stderr="", cmd=[]),
             CmdResult(code=0, stdout="fetched", stderr="", cmd=[]),
