@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 from .runner import run
 
+# Maximum characters for combined stdout/stderr output truncation.
 MAX_OUTPUT_CHARS = 50000
 
 class GitRefError(TypedDict):

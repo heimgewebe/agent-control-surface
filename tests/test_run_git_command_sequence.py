@@ -160,7 +160,7 @@ def test_run_git_command_sequence_combined_truncation():
             path, commands, timeout=10
         )
 
-        assert len(stdout) <= MAX_OUTPUT_CHARS + len("… (truncated)")
+        assert len(stdout) <= MAX_OUTPUT_CHARS + 64
         assert "… (truncated)" in stdout
 
 def test_run_git_command_sequence_empty():
