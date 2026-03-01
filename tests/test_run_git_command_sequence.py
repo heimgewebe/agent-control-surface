@@ -84,7 +84,7 @@ def test_run_git_command_sequence_continue_on_error():
         assert ok is False
         assert mock_run.call_count == 3
         assert "still ran" in stdout
-        assert code == 0 # last code is from git diff
+        assert code == 0  # last code is from git diff
 
 def test_run_git_command_sequence_allow_failures_index():
     path = Path("/tmp/test_repo")
