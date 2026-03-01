@@ -1,5 +1,4 @@
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from pathlib import Path
 from panel.utils import run_git_command_sequence, MAX_OUTPUT_CHARS
 from panel.runner import CmdResult
@@ -35,7 +34,7 @@ def test_run_git_command_sequence_failure():
         CmdResult(code=1, stdout="", stderr="error: invalid command", cmd=["git", "invalid"]),
     ]
 
-    with patch("panel.utils.run", side_effect=mock_results) as mock_run:
+    with patch("panel.utils.run", side_effect=mock_results):
         ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
             path, commands, timeout=10
         )
@@ -96,7 +95,7 @@ def test_run_git_command_sequence_allow_failures_index():
         CmdResult(code=1, stdout="", stderr="optional failure", cmd=["git", "optional"]),
     ]
 
-    with patch("panel.utils.run", side_effect=mock_results) as mock_run:
+    with patch("panel.utils.run", side_effect=mock_results):
         ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
             path, commands, timeout=10, allow_failures={1}
         )
@@ -114,7 +113,7 @@ def test_run_git_command_sequence_allow_failures_command():
         CmdResult(code=1, stdout="", stderr="optional failure", cmd=["git", "optional"]),
     ]
 
-    with patch("panel.utils.run", side_effect=mock_results) as mock_run:
+    with patch("panel.utils.run", side_effect=mock_results):
         ok, stdout, stderr, code, optional_failures = run_git_command_sequence(
             path, commands, timeout=10, allow_failure_cmds={("git", "optional")}
         )
