@@ -1,5 +1,6 @@
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
+
 from panel.app import get_git_state
 from panel.runner import CmdResult
 

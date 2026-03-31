@@ -1,7 +1,9 @@
-from unittest.mock import patch, MagicMock
-from panel.app import extract_pr_url, find_existing_pr_url
-from pathlib import Path
 import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from panel.app import extract_pr_url, find_existing_pr_url
+
 
 def test_extract_pr_url():
     # Standard output from gh pr create

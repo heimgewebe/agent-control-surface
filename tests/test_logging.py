@@ -1,11 +1,14 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from panel.logging import (
-    redact_secrets,
-    _get_sensitive_env_values,
-    resolve_action_log_config,
     ActionLogConfig,
+    _get_sensitive_env_values,
+    redact_secrets,
+    resolve_action_log_config,
 )
+
 
 @pytest.fixture(autouse=True)
 def clear_env_cache():
@@ -123,6 +126,7 @@ def test_redact_secrets_deduplication(monkeypatch):
 def test_get_log_path_for_date_updates_correctly():
     """Test that _get_log_path_for_date caches correctly and respects date changes."""
     from datetime import date
+
     from panel.logging import DEFAULT_LOG_DIR, _get_log_path_for_date
 
     _get_log_path_for_date.cache_clear()

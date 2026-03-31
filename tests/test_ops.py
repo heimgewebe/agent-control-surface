@@ -1,11 +1,21 @@
 import json
-import pytest
 from pathlib import Path
-from panel.ops import run_wgx_audit_git, run_wgx_routine_preview, run_wgx_routine_apply, create_token, AuditGit, get_latest_audit_artifact, extract_json_from_stdout
-from panel.runner import CmdResult
+
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
 from panel.app import app
+from panel.ops import (
+    AuditGit,
+    create_token,
+    extract_json_from_stdout,
+    get_latest_audit_artifact,
+    run_wgx_audit_git,
+    run_wgx_routine_apply,
+    run_wgx_routine_preview,
+)
+from panel.runner import CmdResult
 
 # Mock JSON responses matching WGX output
 MOCK_AUDIT_JSON = json.dumps({
@@ -671,7 +681,7 @@ def test_run_audit_job_semantics_unit(monkeypatch, mock_get_repo):
     Verifies that if audit returns 'error' status (findings), the Job status becomes 'error',
     but ActionResult.ok is True (execution success).
     """
-    from panel.app import run_audit_job, ActionResult
+    from panel.app import ActionResult, run_audit_job
 
     # 1. Mock internal calls
     status_calls = []
@@ -717,8 +727,7 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
     and ActionResult.ok is False.
     """
     # Ensure necessary imports are present for robustness
-    from pathlib import Path
-    from panel.app import run_audit_job, ActionResult
+    from panel.app import ActionResult, run_audit_job
     from panel.repos import Repo
 
     # 1. Mock internal calls
@@ -736,7 +745,6 @@ def test_run_audit_job_technical_error_unit(monkeypatch, tmp_path):
         raise RuntimeError("WGX crashed")
 
     # We need mock_get_repo to succeed so we reach the audit call
-    from panel.repos import Repo
     def mock_get_repo(key):
         return Repo(key=key, path=tmp_path / "mock", display="mock")
 
@@ -774,7 +782,7 @@ def test_extract_path_from_stdout_robustness(tmp_path):
     assert extract_path_from_stdout(f"Output: {safe_file.name}", repo) == safe_file.resolve()
 
     # 2. Null byte in token -> ignored
-    bad_token = f"safe.json\x00"
+    bad_token = "safe.json\x00"
     assert extract_path_from_stdout(f"Output: {bad_token}", repo) is None
 
     # 3. Oversized token -> ignored
