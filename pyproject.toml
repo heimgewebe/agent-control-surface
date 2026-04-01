@@ -15,6 +15,12 @@ dependencies = [
   "jinja2>=3.1.4",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "httpx",
+]
+
 [project.scripts]
 agent-control-surface = "panel.app:main"
 
