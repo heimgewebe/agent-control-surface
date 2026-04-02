@@ -5,15 +5,14 @@ import json
 import os
 import re
 import secrets
-import shlex
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,25 +22,21 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .logging import log_action, redact_secrets
-from .utils import (
-    MAX_OUTPUT_CHARS,
-    GitRefError,
-    classify_git_ref_error,
-    combine_output,
-    format_command_line,
-    is_valid_branch_name,
-    run_git_command_sequence,
-    truncate_text,
-)
 from .ops import (
-    AuditGit,
     get_latest_audit_artifact,
     run_wgx_audit_git,
-    run_wgx_routine_preview,
     run_wgx_routine_apply,
+    run_wgx_routine_preview,
 )
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
+from .utils import (
+    MAX_OUTPUT_CHARS,
+    classify_git_ref_error,
+    combine_output,
+    is_valid_branch_name,
+    run_git_command_sequence,
+)
 
 app = FastAPI(title="agent-control-surface")
 
@@ -681,8 +676,8 @@ def purge_jobs_locked() -> None:
     if len(JOBS) <= JOB_MAX_ENTRIES:
         return
     ordered = sorted(JOB_CREATED_AT.items(), key=lambda item: item[1])
-    while len(ordered) > JOB_MAX_ENTRIES:
-        job_id, _ = ordered.pop(0)
+    excess = len(ordered) - JOB_MAX_ENTRIES
+    for job_id, _ in ordered[:excess]:
         JOBS.pop(job_id, None)
         JOB_CREATED_AT.pop(job_id, None)
 

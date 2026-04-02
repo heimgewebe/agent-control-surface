@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import re
 import shlex
 from pathlib import Path
 from typing import Any, TypedDict
+
 from .runner import run
 
 # Maximum characters for combined stdout/stderr output truncation.

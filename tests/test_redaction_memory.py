@@ -1,6 +1,7 @@
 import json
-from panel.app import record_job_result, JobState, ActionResult, JOBS, JOB_LOCK
-from panel.logging import redact_secrets
+
+from panel.app import JOB_LOCK, JOBS, ActionResult, JobState, record_job_result
+
 
 def test_record_job_result_redaction_in_memory():
     job_id = "test-redaction-job"

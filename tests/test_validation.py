@@ -1,5 +1,6 @@
 from panel.utils import is_valid_branch_name
 
+
 def test_valid_branch_names():
     assert is_valid_branch_name("feature/abc")
     assert is_valid_branch_name("bugfix-123")

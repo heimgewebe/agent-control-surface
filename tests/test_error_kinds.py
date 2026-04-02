@@ -1,5 +1,7 @@
-from unittest.mock import patch, MagicMock
-from panel.app import apply_patch_action, execute_publish, ApplyPatchReq, PublishReq
+from unittest.mock import MagicMock, patch
+
+from panel.app import ApplyPatchReq, PublishReq, apply_patch_action, execute_publish
+
 
 def test_apply_patch_empty_error_kind():
     # Mock get_repo to avoid checking file system

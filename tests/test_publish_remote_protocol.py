@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from panel.app import get_remote_protocol, https_remote_to_ssh, execute_publish, PublishOptions
+from panel.app import PublishOptions, execute_publish, get_remote_protocol, https_remote_to_ssh
 from panel.runner import CmdResult
 
 

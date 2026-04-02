@@ -1,14 +1,16 @@
-from panel.app import (
-    record_job_result,
-    JobState,
-    ActionResult,
-    JOBS,
-    JOB_LOCK,
-    MAX_STDOUT_CHARS,
-    MAX_LOG_LINE_CHARS,
-    MAX_JOB_LOG_LINES
-)
 import json
+
+from panel.app import (
+    JOB_LOCK,
+    JOBS,
+    MAX_JOB_LOG_LINES,
+    MAX_LOG_LINE_CHARS,
+    MAX_STDOUT_CHARS,
+    ActionResult,
+    JobState,
+    record_job_result,
+)
+
 
 def test_record_job_result_caps():
     job_id = "test-job-caps"

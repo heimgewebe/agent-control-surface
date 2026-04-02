@@ -150,13 +150,12 @@ def _get_sensitive_env_values() -> tuple[str, ...]:
     return tuple(unique_values)
 
 
-def _get_sensitive_pattern() -> re.Pattern | None:
+def _get_sensitive_pattern() -> re.Pattern[str] | None:
     values = _get_sensitive_env_values()
     if not values:
         return None
+    # values is already sorted by length descending from _get_sensitive_env_values
     # Escape values to treat them as literal strings in regex, then join with |
-    # Sort by length descending (longest-first) to prevent partial matches
-    values = sorted(values, key=len, reverse=True)
     pattern_str = "|".join(map(re.escape, values))
     return re.compile(pattern_str)
 

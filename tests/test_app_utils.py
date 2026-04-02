@@ -1,6 +1,7 @@
-import pytest
 import shlex
-from panel.utils import format_command_line, truncate_text, combine_output, classify_git_ref_error
+
+from panel.utils import classify_git_ref_error, combine_output, format_command_line, truncate_text
+
 
 def test_format_command_line():
     # Simple command

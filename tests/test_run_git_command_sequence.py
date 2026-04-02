@@ -1,7 +1,9 @@
-from unittest.mock import patch
 from pathlib import Path
-from panel.utils import run_git_command_sequence, MAX_OUTPUT_CHARS
+from unittest.mock import patch
+
 from panel.runner import CmdResult
+from panel.utils import MAX_OUTPUT_CHARS, run_git_command_sequence
+
 
 def test_run_git_command_sequence_success():
     path = Path("/tmp/test_repo")

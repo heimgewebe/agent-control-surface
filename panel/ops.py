@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .runner import run
 
@@ -397,16 +397,16 @@ def run_wgx_routine_preview(repo_key: str, repo_path: Path, routine_id: str) -> 
 
     if preview_data is None:
         if res.code != 0:
-             raise RuntimeError(f"Routine preview failed: {res.stderr or output[:200]}")
+            raise RuntimeError(f"Routine preview failed: {res.stderr or output[:200]}")
 
         # Fallback to checking default file if CLI didn't output JSON
         # Strategy: check if stdout is a path, otherwise try default location
         path_candidate = extract_path_from_stdout(output, repo_path)
         if path_candidate:
-             try:
+            try:
                 with open(path_candidate, "r", encoding="utf-8") as f:
                     preview_data = json.load(f)
-             except Exception:
+            except Exception:
                 pass
 
         if preview_data is None:
@@ -450,10 +450,10 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
         # Fallback logic
         path_candidate = extract_path_from_stdout(output, repo_path)
         if path_candidate:
-             try:
+            try:
                 with open(path_candidate, "r", encoding="utf-8") as f:
                     result_data = json.load(f)
-             except Exception:
+            except Exception:
                 pass
 
         if result_data is None:
@@ -471,9 +471,9 @@ def run_wgx_routine_apply(repo_key: str, repo_path: Path, routine_id: str, token
 
     if result_data is None:
         if res.code != 0:
-             raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr or output[:200]}")
+            raise RuntimeError(f"Routine apply failed and no JSON output found: {res.stderr or output[:200]}")
         else:
-             raise RuntimeError(f"Routine apply succeeded (exit 0) but no JSON output found: {output[:200]}")
+            raise RuntimeError(f"Routine apply succeeded (exit 0) but no JSON output found: {output[:200]}")
 
     # Semantics check: non-zero exit but valid JSON?
     if res.code != 0:

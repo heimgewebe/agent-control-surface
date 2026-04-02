@@ -1,4 +1,5 @@
-from panel.app import JobState, ActionResult
+from panel.app import ActionResult, JobState
+
 
 def test_job_state_smoke():
     """Smoke test to ensure JobState can be instantiated and serialized with results."""
