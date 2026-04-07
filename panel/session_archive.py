@@ -78,6 +78,7 @@ def normalize_record(data: dict[str, Any]) -> dict[str, Any]:
     data.setdefault("summary", None)
     data.setdefault("deleted", False)
     data.setdefault("pinned_context", None)
+    data.setdefault("is_pending", data.get("session_id") is None)
     return data
 
 
@@ -157,6 +158,10 @@ def write_jules_session_record(
     session_id = extract_jules_session_id(combined_output)
     agent = "jules"
     base_dir = agent_sessions_dir(agent)
+    # When no session ID is found the record is stored under a stable pending key.
+    # A later call to reconcile_pending_record() can rename and update it once the
+    # real session ID becomes available (e.g. from a subsequent `jules remote list`).
+    is_pending = session_id is None
     if session_id:
         path = base_dir / f"{session_id}.json"
     else:
@@ -168,6 +173,7 @@ def write_jules_session_record(
         "title": title,
         "prompt": prompt,
         "session_id": session_id,
+        "is_pending": is_pending,
         "status": status,
         "pulled": False,
         "created_at": _now_iso(),
@@ -220,6 +226,38 @@ def mark_session_applied(agent: str, session_id: str, repo_key: str) -> bool:
     return True
 
 
+def reconcile_pending_record(
+    agent: str,
+    pending_path: Path,
+    real_session_id: str,
+) -> tuple[dict[str, Any], Path] | None:
+    """Migrate a _pending_*.json record to its canonical <session_id>.json path.
+
+    Call this once a session ID becomes known (e.g. from a subsequent
+    ``jules remote list`` poll).  Returns the updated record and new path, or
+    None if the pending file no longer exists or already has a session_id.
+    """
+    try:
+        record = read_memory_record(pending_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if record.get("session_id"):
+        return None
+    base_dir = pending_path.parent
+    new_path = base_dir / f"{real_session_id}.json"
+    record["session_id"] = real_session_id
+    record["is_pending"] = False
+    if record.get("status") == "running":
+        record["status"] = "new"
+    record["updated_at"] = _now_iso()
+    _atomic_write_json(new_path, record)
+    try:
+        pending_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return record, new_path
+
+
 def patch_memory_record(
     agent: str,
     session_id: str,
@@ -256,6 +294,13 @@ def patch_memory_record(
     return record
 
 
+def _safe_mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def list_session_records(
     agent: str,
     repo_key: str | None = None,
@@ -264,7 +309,7 @@ def list_session_records(
 ) -> list[dict[str, Any]]:
     base = agent_sessions_dir(agent)
     out: list[dict[str, Any]] = []
-    for p in sorted(base.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+    for p in sorted(base.glob("*.json"), key=_safe_mtime, reverse=True):
         try:
             rec = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

@@ -9,6 +9,7 @@ from panel.session_archive import (
     list_session_records,
     normalize_tags,
     patch_memory_record,
+    reconcile_pending_record,
     state_root,
     summary_heading,
     title_from_prompt,
@@ -101,7 +102,10 @@ def test_api_jules_prompt_and_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     from panel import app as app_module
     from panel.runner import CmdResult
 
+    captured: dict = {}
+
     def fake_run_ok(cmd, cwd, timeout=60, env=None, input_text=None):
+        captured["input_text"] = input_text
         return CmdResult(
             0,
             "ok\nsession_id: 99999999-aaaa-bbbb-cccc-dddddddddddd\n",
@@ -117,6 +121,8 @@ def test_api_jules_prompt_and_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert data["ok"] is True
     assert data["session_id"] == "99999999-aaaa-bbbb-cccc-dddddddddddd"
     assert data["title"] == "line one"
+    # Full prompt must be forwarded to jules new via stdin
+    assert captured["input_text"] == "line one\nrest"
     mem = client.get("/api/memory/sessions", params={"repo": "metarepo"})
     assert mem.status_code == 200
     body = mem.json()
@@ -193,3 +199,98 @@ def test_api_jules_prompt_jules_failure(monkeypatch: pytest.MonkeyPatch, tmp_pat
     r = client.post("/api/jules/prompt", json={"repo": "metarepo", "prompt": "do work"})
     assert r.status_code == 502
     assert r.json()["ok"] is False
+
+
+def test_write_jules_session_record_pending_flag(tmp_state: Path) -> None:
+    """Records without a recognized session ID must carry is_pending=True."""
+    rec, path = write_jules_session_record(
+        repo_key="demo",
+        title="pending task",
+        prompt="do something",
+        combined_output="no id in here",
+        exit_code=0,
+    )
+    assert rec["is_pending"] is True
+    assert rec["session_id"] is None
+    assert path.name.startswith("_pending_")
+    assert rec["status"] == "running"
+
+
+def test_write_jules_session_record_not_pending_when_id_found(tmp_state: Path) -> None:
+    """Records with a recognized session ID must carry is_pending=False."""
+    sid = "12345678-1234-1234-1234-1234567890ab"
+    rec, path = write_jules_session_record(
+        repo_key="demo",
+        title="known task",
+        prompt=None,
+        combined_output=f"done {sid}",
+        exit_code=0,
+    )
+    assert rec["is_pending"] is False
+    assert rec["session_id"] == sid
+    assert path.name == f"{sid}.json"
+
+
+def test_reconcile_pending_record(tmp_state: Path) -> None:
+    """reconcile_pending_record migrates _pending_*.json to <session_id>.json."""
+    rec, pending_path = write_jules_session_record(
+        repo_key="demo",
+        title="t",
+        prompt="my prompt",
+        combined_output="no uuid here",
+        exit_code=0,
+    )
+    assert rec["is_pending"] is True
+    real_sid = "aabbccdd-1111-2222-3333-444444444444"
+    result = reconcile_pending_record("jules", pending_path, real_sid)
+    assert result is not None
+    updated_rec, new_path = result
+    assert updated_rec["session_id"] == real_sid
+    assert updated_rec["is_pending"] is False
+    assert updated_rec["status"] == "new"
+    assert new_path.name == f"{real_sid}.json"
+    assert new_path.exists()
+    assert not pending_path.exists()
+
+
+def test_reconcile_pending_record_no_op_if_session_id_present(tmp_state: Path) -> None:
+    """reconcile_pending_record returns None when record already has a session_id."""
+    sid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    _, path = write_jules_session_record(
+        repo_key="demo",
+        title="t",
+        prompt=None,
+        combined_output=f"id {sid}",
+        exit_code=0,
+    )
+    result = reconcile_pending_record("jules", path, "00000000-0000-0000-0000-000000000001")
+    assert result is None
+
+
+def test_list_session_records_tolerates_stat_failure(tmp_state: Path) -> None:
+    """list_session_records must not raise when stat() fails on a file."""
+    base = agent_sessions_dir("jules")
+    sid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    combined = f"ok {sid}\n"
+    write_jules_session_record(
+        repo_key="demo",
+        title="t",
+        prompt=None,
+        combined_output=combined,
+        exit_code=0,
+    )
+    # Simulate a stat failure by monkeypatching Path.stat to raise for .json files
+    original_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.suffix == ".json":
+            raise OSError("simulated stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(Path, "stat", flaky_stat):
+        rows = list_session_records("jules", repo_key="demo")
+    # Should not raise; files with failed stat get mtime=0.0 and are still listed
+    assert isinstance(rows, list)
+

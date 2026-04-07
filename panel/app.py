@@ -2249,7 +2249,7 @@ def find_existing_pr_url(path: Path, head_branch: str, base_branch: str) -> str 
 
 def _jules_new_session_with_archive(repo_key: str, title: str, prompt: str | None):
     target = get_repo(repo_key)
-    out = run(["jules", "new", title], cwd=target.path, timeout=60)
+    out = run(["jules", "new", title], cwd=target.path, timeout=60, input_text=prompt)
     combined = combine_output(out)
     record, path = write_jules_session_record(
         repo_key=target.key,
