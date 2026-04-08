@@ -246,7 +246,14 @@ def reconcile_pending_record(
     if not re.match(r"^[0-9a-fA-F-]{8,64}$", real_session_id):
         raise ValueError("invalid session id")
     real_session_id = real_session_id.lower()
+
+    # Check if pending_path parent is plausible
     base_dir = pending_path.parent
+    try:
+        base_dir.resolve().relative_to(agent_sessions_dir(agent))
+    except ValueError:
+        return None
+
     new_path = base_dir / f"{real_session_id}.json"
     record["session_id"] = real_session_id
     record["is_pending"] = False

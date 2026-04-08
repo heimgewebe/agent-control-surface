@@ -295,3 +295,67 @@ def test_list_session_records_tolerates_stat_failure(tmp_state: Path) -> None:
         rows = list_session_records("jules", repo_key="demo")
     # Should not raise; files with failed stat get mtime=0.0 and are still listed
     assert isinstance(rows, list)
+
+
+def test_api_memory_session_detail_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("fastapi")
+    monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from panel import app as app_module
+
+    client = TestClient(app_module.app)
+    r = client.get("/api/memory/sessions/unbekannt")
+    assert r.status_code == 404
+
+
+def test_api_memory_session_patch_and_delete(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("fastapi")
+    monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
+    from fastapi.testclient import TestClient
+    from panel import app as app_module
+    from panel.runner import CmdResult
+
+    def fake_run_ok(*a, **k):
+        return CmdResult(0, "ok\nsession_id: 12345678-1234-1234-1234-1234567890ab\n", "", ["jules"])
+
+    monkeypatch.setattr(app_module, "run", fake_run_ok)
+    client = TestClient(app_module.app)
+    client.post("/api/jules/prompt", json={"repo": "metarepo", "prompt": "x"})
+
+    sid = "12345678-1234-1234-1234-1234567890ab"
+
+    # Detail GET
+    r = client.get(f"/api/memory/sessions/{sid}?repo=metarepo")
+    assert r.status_code == 200
+    assert "jules_output" not in r.json()
+    assert "jules_output_preview" in r.json()
+
+    # Patch tags
+    p = client.patch(
+        f"/api/memory/sessions/{sid}?repo=metarepo",
+        json={"tags": ["a", "b"], "summary": "gepatcht"}
+    )
+    assert p.status_code == 200
+    assert p.json()["tags"] == ["a", "b"]
+    assert p.json()["summary"] == "gepatcht"
+
+    # Patch with invalid tag
+    p_err = client.patch(
+        f"/api/memory/sessions/{sid}?repo=metarepo",
+        json={"tags": ["in val id"]}
+    )
+    assert p_err.status_code == 400
+
+    # Delete
+    d = client.delete(f"/api/memory/sessions/{sid}?repo=metarepo")
+    assert d.status_code == 200
+    assert d.json()["deleted"] is True
+
+    # Detail GET after delete (should be 404 without flag)
+    r_del = client.get(f"/api/memory/sessions/{sid}?repo=metarepo")
+    assert r_del.status_code == 404
+
+    # Detail GET after delete (should be 200 with flag)
+    r_del2 = client.get(f"/api/memory/sessions/{sid}?repo=metarepo&include_deleted=true")
+    assert r_del2.status_code == 200
+    assert r_del2.json()["deleted"] is True

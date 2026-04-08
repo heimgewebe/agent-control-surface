@@ -48,6 +48,7 @@ from .utils import (
     combine_output,
     is_valid_branch_name,
     run_git_command_sequence,
+    truncate_text,
 )
 
 app = FastAPI(title="agent-control-surface")
