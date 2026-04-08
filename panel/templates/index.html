@@ -92,7 +92,7 @@
     <section class="section">
       <h2>Jules – Fließtext (Blaupause Phase 1)</h2>
       <p class="small">
-        Volltext-Prompt; der erste Zeile wird als Kurztitel an <code>jules new</code> übergeben. Ausgabe und Session-ID
+        Volltext-Prompt; die erste Zeile wird als Kurztitel an <code>jules new</code> übergeben. Ausgabe und Session-ID
         landen unter <code>~/.local/state/agent-control-surface/sessions/jules/</code> (oder <code>ACS_STATE_DIR</code>).
       </p>
       <textarea id="julesPrompt" placeholder="Beschreibe die Aufgabe in eigenen Worten …" style="min-height: 140px"></textarea>
@@ -579,7 +579,7 @@
         }
       }
 
-      async function newSession() {
+      async function listSessions() {
         const repoValue = ensureRepo((message) => {
           document.getElementById("sessions").textContent = message;
         });
@@ -588,7 +588,6 @@
           `/api/sessions?repo=${encodeURIComponent(repoValue)}`,
         );
       }
-      async function newSession() {
       async function runJulesPrompt() {
         const pre = document.getElementById("sessions");
         const repoValue = ensureRepo((message) => {

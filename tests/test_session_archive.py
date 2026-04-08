@@ -90,9 +90,9 @@ def test_update_session_pulled(tmp_state: Path) -> None:
 
 
 def test_agent_sessions_dir_sanitizes_agent(tmp_state: Path) -> None:
-    d = agent_sessions_dir("weird/name..")
+    d = agent_sessions_dir("weird/n^ame")
     assert d.parent.name == "sessions"
-    assert ".." not in d.name and "/" not in d.name
+    assert "^" not in d.name and "/" not in d.name
 
 
 def test_api_jules_prompt_and_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

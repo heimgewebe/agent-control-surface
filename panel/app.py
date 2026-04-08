@@ -271,7 +271,7 @@ def api_jules_prompt(req: JulesPromptReq) -> JSONResponse:
         title=title,
         session_id=record.get("session_id"),
         archive_path=archive_rel,
-        raw=combined,
+        raw=truncate_text(combined, MAX_OUTPUT_CHARS),
         jules_exit_code=out.code,
     )
     status_code = 200 if out.code == 0 else 502

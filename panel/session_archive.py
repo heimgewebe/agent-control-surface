@@ -28,7 +28,8 @@ def state_root() -> Path:
 
 
 def agent_sessions_dir(agent: str) -> Path:
-    safe = agent.replace("/", "_").replace("..", "_")
+    import re
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", agent)
     d = state_root() / "sessions" / safe
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -119,15 +120,16 @@ def locate_session_paths(
     repo_key: str | None = None,
 ) -> list[Path]:
     base = agent_sessions_dir(agent)
+    normalized_session_id = session_id.strip().lower()
     paths: list[Path] = []
     for p in base.glob("*.json"):
-        stem_match = p.stem == session_id
+        stem_match = p.stem.strip().lower() == normalized_session_id
         try:
             rec = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         rec = normalize_record(rec)
-        if not stem_match and rec.get("session_id") != session_id:
+        if not stem_match and str(rec.get("session_id") or "").strip().lower() != normalized_session_id:
             continue
         if repo_key and rec.get("repo_key") != repo_key:
             continue
