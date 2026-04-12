@@ -395,7 +395,6 @@
         document.getElementById("repo").addEventListener("change", updateRepoDependentState);
       });
 
-      async function listSessions() {
       async function runJulesPrompt() {
         const pre = document.getElementById("sessions");
         const repoValue = ensureRepo((message) => {
@@ -403,8 +402,7 @@
         });
         if (!repoValue) return;
         const promptRaw = document.getElementById("julesPrompt").value;
-        const promptTrimmed = promptRaw.trim();
-        if (!promptTrimmed) {
+        if (!promptRaw.trim()) {
           pre.textContent = "Prompt darf nicht leer sein.";
           return;
         }
@@ -588,189 +586,6 @@
           `/api/sessions?repo=${encodeURIComponent(repoValue)}`,
         );
       }
-      async function runJulesPrompt() {
-        const pre = document.getElementById("sessions");
-        const repoValue = ensureRepo((message) => {
-          pre.textContent = message;
-        });
-        if (!repoValue) return;
-        const promptRaw = document.getElementById("julesPrompt").value;
-        const promptTrimmed = promptRaw.trim();
-        if (!promptTrimmed) {
-          pre.textContent = "Prompt darf nicht leer sein.";
-          return;
-        }
-        pre.textContent = "…";
-        try {
-          const res = await fetch("/api/jules/prompt", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ repo: repoValue, prompt: promptRaw }),
-          });
-          let data;
-          try {
-            data = await res.json();
-          } catch (err) {
-            pre.textContent = `Antwort konnte nicht gelesen werden (${res.status}).`;
-            return;
-          }
-          if (!res.ok && data.detail !== undefined) {
-            pre.textContent = `Fehler (${res.status}): ${formatFastApiDetail(data.detail) || safeStringify(data)}`;
-            return;
-          }
-          const ok = data.ok === true;
-          const lines = [
-            ok ? "✔ Jules new abgeschlossen (Exit 0)." : "⚠ Jules hat mit Fehlercode beendet (Details unten, Archiv gespeichert).",
-            `Titel (CLI): ${data.title || ""}`,
-            data.session_id ? `Session-ID: ${data.session_id}` : "Session-ID: (nicht erkannt – Rohausgabe prüfen)",
-            `Archiv: ${data.archive_path || "—"}`,
-            "",
-            data.raw || "",
-          ];
-          pre.textContent = lines.join("\n");
-          if (data.session_id) {
-            document.getElementById("sessionId").value = data.session_id;
-          }
-        } catch (error) {
-          pre.textContent = `Fehler: ${error.message}`;
-        }
-      }
-      function setMemoryStatus(message, cls) {
-        const el = document.getElementById("memoryStatus");
-        el.textContent = message || "";
-        el.className = cls ? `status ${cls}` : "status";
-      }
-      async function loadMemoryDetail() {
-        const id = document.getElementById("sessionId").value.trim();
-        const pre = document.getElementById("memoryDetail");
-        if (!id) {
-          setMemoryStatus("Session-ID (Feld bei „Diff“) setzen.", "warn");
-          return;
-        }
-        const repoValue = ensureRepo((message) => setMemoryStatus(message, "error"));
-        if (!repoValue) return;
-        setMemoryStatus("");
-        pre.textContent = "…";
-        try {
-          const res = await fetch(
-            `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
-          );
-          const txt = await res.text();
-          if (!res.ok) {
-            pre.textContent = txt;
-            setMemoryStatus(formatErrorMessage(txt), "error");
-            return;
-          }
-          const data = JSON.parse(txt);
-          document.getElementById("memorySummary").value = data.summary || "";
-          document.getElementById("memoryTags").value = Array.isArray(data.tags) ? data.tags.join(", ") : "";
-          document.getElementById("memoryPinned").value = data.pinned_context || "";
-          pre.textContent = JSON.stringify(
-            {
-              display_status: data.display_status,
-              status: data.status,
-              session_id: data.session_id,
-              repo_key: data.repo_key,
-              summary: data.summary,
-              tags: data.tags,
-              jules_output_preview: data.jules_output_preview,
-            },
-            null,
-            2,
-          );
-          setMemoryStatus(`Geladen: ${data.display_status || data.status || ""}`, "success");
-        } catch (error) {
-          pre.textContent = "";
-          setMemoryStatus(error.message, "error");
-        }
-      }
-      async function saveMemoryPatch() {
-        const id = document.getElementById("sessionId").value.trim();
-        if (!id) {
-          setMemoryStatus("Session-ID fehlt.", "warn");
-          return;
-        }
-        const repoValue = ensureRepo((message) => setMemoryStatus(message, "error"));
-        if (!repoValue) return;
-        const tagsRaw = document.getElementById("memoryTags").value;
-        const tags = tagsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-        const body = {
-          summary: document.getElementById("memorySummary").value,
-          tags,
-          pinned_context: document.getElementById("memoryPinned").value,
-        };
-        setMemoryStatus("");
-        try {
-          const res = await fetch(
-            `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            },
-          );
-          const txt = await res.text();
-          if (!res.ok) {
-            setMemoryStatus(formatErrorMessage(txt), "error");
-            return;
-          }
-          setMemoryStatus("Gespeichert.", "success");
-          document.getElementById("memoryDetail").textContent = JSON.stringify(JSON.parse(txt), null, 2);
-        } catch (error) {
-          setMemoryStatus(error.message, "error");
-        }
-      }
-      async function softDeleteMemory() {
-        const id = document.getElementById("sessionId").value.trim();
-        if (!id) {
-          setMemoryStatus("Session-ID fehlt.", "warn");
-          return;
-        }
-        const repoValue = ensureRepo((message) => setMemoryStatus(message, "error"));
-        if (!repoValue) return;
-        if (!window.confirm("Session im Archiv als gelöscht markieren?")) return;
-        setMemoryStatus("");
-        try {
-          const res = await fetch(
-            `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
-            { method: "DELETE" },
-          );
-          const txt = await res.text();
-          if (!res.ok) {
-            setMemoryStatus(formatErrorMessage(txt), "error");
-            return;
-          }
-          setMemoryStatus("Als gelöscht markiert.", "success");
-          document.getElementById("memoryDetail").textContent = txt;
-        } catch (error) {
-          setMemoryStatus(error.message, "error");
-        }
-      }
-      async function listArchivedSessions() {
-        const pre = document.getElementById("sessions");
-        const repoKey = repo();
-        const incDel = document.getElementById("memoryIncludeDeleted").checked;
-        const q = repoKey
-          ? `agent=jules&repo=${encodeURIComponent(repoKey)}&include_deleted=${incDel}`
-          : `agent=jules&include_deleted=${incDel}`;
-        pre.textContent = "…";
-        try {
-          const res = await fetch(`/api/memory/sessions?${q}`);
-          const txt = await res.text();
-          if (!res.ok) {
-            pre.textContent = formatErrorMessage(txt);
-            return;
-          }
-          try {
-            pre.textContent = JSON.stringify(JSON.parse(txt), null, 2);
-          } catch (err) {
-            pre.textContent = txt;
-          }
-        } catch (error) {
-          pre.textContent = `Fehler: ${error.message}`;
-        }
-      }
-
       async function newSession() {
         const repoValue = ensureRepo((message) => {
           document.getElementById("sessions").textContent = message;

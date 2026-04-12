@@ -28,7 +28,6 @@ def state_root() -> Path:
 
 
 def agent_sessions_dir(agent: str) -> Path:
-    import re
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", agent)
     d = state_root() / "sessions" / safe
     d.mkdir(parents=True, exist_ok=True)
