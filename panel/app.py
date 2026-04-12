@@ -30,12 +30,25 @@ from .ops import (
 )
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
+from .session_archive import (
+    display_status,
+    list_session_records,
+    locate_session_paths,
+    mark_session_applied,
+    patch_memory_record,
+    read_memory_record,
+    state_root,
+    title_from_prompt,
+    update_session_pulled,
+    write_jules_session_record,
+)
 from .utils import (
     MAX_OUTPUT_CHARS,
     classify_git_ref_error,
     combine_output,
     is_valid_branch_name,
     run_git_command_sequence,
+    truncate_text,
 )
 
 app = FastAPI(title="agent-control-surface")
@@ -94,6 +107,28 @@ class JobState(BaseModel):
 class NewSessionReq(BaseModel):
     repo: str
     title: str
+
+
+class JulesPromptReq(BaseModel):
+    repo: str
+    prompt: str
+
+
+class JulesPromptResponse(BaseModel):
+    ok: bool
+    title: str
+    session_id: str | None = None
+    archive_path: str
+    raw: str
+    jules_exit_code: int
+
+
+class MemoryPatchReq(BaseModel):
+    summary: str | None = None
+    tags: list[str] | None = None
+    pinned_context: str | None = None
+    deleted: bool | None = None
+    clear_summary: bool = False
 
 
 class ApplyPatchReq(BaseModel):
@@ -215,9 +250,141 @@ def api_sessions(repo: str = Query(...)) -> str:
 
 @app.post("/api/sessions/new", response_class=PlainTextResponse)
 def api_sessions_new(req: NewSessionReq) -> str:
-    target = get_repo(req.repo)
-    out = run(["jules", "new", req.title], cwd=target.path, timeout=60)
+    out, _, _ = _jules_new_session_with_archive(req.repo, req.title, None)
     return combine_output(out)
+
+
+@app.post("/api/jules/prompt", response_class=JSONResponse)
+def api_jules_prompt(req: JulesPromptReq) -> JSONResponse:
+    prompt_text = req.prompt
+    if not prompt_text.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+    title = title_from_prompt(prompt_text)
+    out, record, path = _jules_new_session_with_archive(req.repo, title, prompt_text)
+    combined = combine_output(out)
+    try:
+        archive_rel = str(path.resolve().relative_to(state_root()))
+    except ValueError:
+        archive_rel = path.name
+    payload = JulesPromptResponse(
+        ok=out.code == 0,
+        title=title,
+        session_id=record.get("session_id"),
+        archive_path=archive_rel,
+        raw=truncate_text(combined, MAX_OUTPUT_CHARS),
+        jules_exit_code=out.code,
+    )
+    status_code = 200 if out.code == 0 else 502
+    return JSONResponse(payload.model_dump(), status_code=status_code)
+
+
+@app.get("/api/memory/sessions", response_class=JSONResponse)
+def api_memory_sessions(
+    agent: str = Query("jules"),
+    repo: str | None = Query(None),
+    include_deleted: bool = Query(False),
+) -> JSONResponse:
+    rows = list_session_records(agent, repo_key=repo, include_deleted=include_deleted)
+    summaries = []
+    for r in rows:
+        summaries.append(
+            {
+                "session_id": r.get("session_id"),
+                "repo_key": r.get("repo_key"),
+                "title": r.get("title"),
+                "status": r.get("status"),
+                "display_status": r.get("display_status"),
+                "pulled": r.get("pulled"),
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+                "archive_relative_path": r.get("archive_relative_path"),
+                "jules_exit_code": r.get("jules_exit_code"),
+                "has_prompt": bool(r.get("prompt")),
+                "tags": r.get("tags"),
+                "summary": r.get("summary"),
+                "deleted": r.get("deleted"),
+            }
+        )
+    return JSONResponse({"agent": agent, "sessions": summaries})
+
+
+@app.get("/api/memory/sessions/{session_id}", response_class=JSONResponse)
+def api_memory_session_detail(
+    session_id: str,
+    agent: str = Query("jules"),
+    repo: str | None = Query(None),
+    include_output: bool = Query(False),
+    include_deleted: bool = Query(False),
+) -> JSONResponse:
+    paths = locate_session_paths(agent, session_id, repo)
+    if not paths:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if len(paths) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Ambiguous session id; pass repo query parameter.",
+        )
+    try:
+        rec = read_memory_record(paths[0])
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Corrupt archive file") from exc
+    if rec.get("deleted") and not include_deleted:
+        raise HTTPException(status_code=404, detail="Session deleted")
+    if repo and rec.get("repo_key") != repo:
+        raise HTTPException(status_code=404, detail="Session not found")
+    data = dict(rec)
+    data["display_status"] = display_status(rec)
+    if not include_output:
+        preview = truncate_text(data.get("jules_output") or "", 4000)
+        data["jules_output_preview"] = preview
+        data.pop("jules_output", None)
+    return JSONResponse(data)
+
+
+@app.patch("/api/memory/sessions/{session_id}", response_class=JSONResponse)
+def api_memory_session_patch(
+    session_id: str,
+    req: MemoryPatchReq,
+    agent: str = Query("jules"),
+    repo: str | None = Query(None),
+) -> JSONResponse:
+    try:
+        rec = patch_memory_record(
+            agent,
+            session_id,
+            repo,
+            summary=req.summary,
+            tags=req.tags,
+            pinned_context=req.pinned_context,
+            deleted=req.deleted,
+            unset_summary=req.clear_summary,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    out = dict(rec)
+    out["display_status"] = display_status(rec)
+    if "jules_output" in out:
+        out["jules_output_preview"] = truncate_text(out.get("jules_output") or "", 4000)
+        del out["jules_output"]
+    return JSONResponse(out)
+
+
+@app.delete("/api/memory/sessions/{session_id}", response_class=JSONResponse)
+def api_memory_session_delete(
+    session_id: str,
+    agent: str = Query("jules"),
+    repo: str | None = Query(None),
+) -> JSONResponse:
+    try:
+        rec = patch_memory_record(agent, session_id, repo, deleted=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "deleted": True, "session_id": rec.get("session_id")})
+
 
 
 @app.get("/api/sessions/{session_id}/diff", response_class=PlainTextResponse)
@@ -230,6 +397,7 @@ def api_session_diff(session_id: str, repo: str = Query(...)) -> str:
     txt = normalize_patch_output(combine_output(out))
     if not txt.strip():
         raise HTTPException(status_code=404, detail="No patch returned for this session.")
+    update_session_pulled("jules", session_id, target.key)
     return txt
 
 
@@ -1148,6 +1316,9 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
     set_apply_context(target.key, after_diff, req.session_id or "")
+    sid = (req.session_id or "").strip()
+    if sid and changed:
+        mark_session_applied("jules", sid, target.key)
     return result, 200
 
 
@@ -2072,6 +2243,19 @@ def find_existing_pr_url(path: Path, head_branch: str, base_branch: str) -> str 
             return url
     return None
 
+
+def _jules_new_session_with_archive(repo_key: str, title: str, prompt: str | None):
+    target = get_repo(repo_key)
+    out = run(["jules", "new", title], cwd=target.path, timeout=60, input_text=prompt)
+    combined = combine_output(out)
+    record, path = write_jules_session_record(
+        repo_key=target.key,
+        title=title,
+        prompt=prompt,
+        combined_output=combined,
+        exit_code=out.code,
+    )
+    return out, record, path
 
 def get_repo(key: str) -> Repo:
     try:
