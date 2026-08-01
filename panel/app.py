@@ -101,8 +101,8 @@ async def mutation_authorization_boundary(request: Request, call_next: Any) -> R
     if request.method.upper() in MUTATING_HTTP_METHODS:
         try:
             authorize_mutation_request(request)
-        except MutationAuthorizationError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=403)
+        except MutationAuthorizationError:
+            return JSONResponse({"detail": "Mutation authorization rejected."}, status_code=403)
     return await call_next(request)
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -458,7 +458,7 @@ def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
         headers={"X-ACS-Actor-Token": "not-configured"},
     )
     assert res.status_code == 403
-    assert "authorization failed" in res.json()["detail"]
+    assert "authorization" in res.json()["detail"]
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled and authenticated."""
@@ -623,7 +623,7 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
         headers={"X-ACS-CSRF": csrf_token}
     )
     assert res.status_code == 403
-    assert "Same-origin evidence required" in res.json()["detail"]
+    assert "authorization" in res.json()["detail"]
 
     # 2. Valid CSRF and correct Origin -> 200
     res = client.post(
