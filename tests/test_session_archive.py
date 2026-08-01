@@ -98,6 +98,7 @@ def test_agent_sessions_dir_sanitizes_agent(tmp_state: Path) -> None:
 def test_api_jules_prompt_and_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pytest.importorskip("fastapi")
     monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ACS_MUTATION_SHARED_SECRET", "test-actor-secret")
     from fastapi.testclient import TestClient
 
     from panel import app as app_module
@@ -115,7 +116,10 @@ def test_api_jules_prompt_and_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         )
 
     monkeypatch.setattr(app_module, "run", fake_run_ok)
-    client = TestClient(app_module.app)
+    client = TestClient(
+        app_module.app,
+        headers={"X-ACS-Actor-Token": "test-actor-secret"},
+    )
     r = client.post("/api/jules/prompt", json={"repo": "metarepo", "prompt": "line one\nrest\n "})
     assert r.status_code == 200
     data = r.json()
@@ -187,6 +191,7 @@ def test_patch_and_soft_delete(tmp_state: Path) -> None:
 def test_api_jules_prompt_jules_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pytest.importorskip("fastapi")
     monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ACS_MUTATION_SHARED_SECRET", "test-actor-secret")
     from fastapi.testclient import TestClient
 
     from panel import app as app_module
@@ -197,7 +202,10 @@ def test_api_jules_prompt_jules_failure(monkeypatch: pytest.MonkeyPatch, tmp_pat
         "run",
         lambda *a, **k: CmdResult(1, "", "jules crashed", ["jules", "new", "t"]),
     )
-    client = TestClient(app_module.app)
+    client = TestClient(
+        app_module.app,
+        headers={"X-ACS-Actor-Token": "test-actor-secret"},
+    )
     r = client.post("/api/jules/prompt", json={"repo": "metarepo", "prompt": "do work"})
     assert r.status_code == 502
     assert r.json()["ok"] is False
@@ -271,7 +279,6 @@ def test_reconcile_pending_record_no_op_if_session_id_present(tmp_state: Path) -
 
 def test_list_session_records_tolerates_stat_failure(tmp_state: Path) -> None:
     """list_session_records must not raise when stat() fails on a file."""
-    base = agent_sessions_dir("jules")
     sid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
     combined = f"ok {sid}\n"
     write_jules_session_record(
@@ -301,6 +308,7 @@ def test_api_memory_session_detail_not_found(monkeypatch: pytest.MonkeyPatch, tm
     pytest.importorskip("fastapi")
     monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
     from fastapi.testclient import TestClient
+
     from panel import app as app_module
 
     client = TestClient(app_module.app)
@@ -311,7 +319,9 @@ def test_api_memory_session_detail_not_found(monkeypatch: pytest.MonkeyPatch, tm
 def test_api_memory_session_patch_and_delete(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pytest.importorskip("fastapi")
     monkeypatch.setenv("ACS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("ACS_MUTATION_SHARED_SECRET", "test-actor-secret")
     from fastapi.testclient import TestClient
+
     from panel import app as app_module
     from panel.runner import CmdResult
 
@@ -319,7 +329,10 @@ def test_api_memory_session_patch_and_delete(monkeypatch: pytest.MonkeyPatch, tm
         return CmdResult(0, "ok\nsession_id: 12345678-1234-1234-1234-1234567890ab\n", "", ["jules"])
 
     monkeypatch.setattr(app_module, "run", fake_run_ok)
-    client = TestClient(app_module.app)
+    client = TestClient(
+        app_module.app,
+        headers={"X-ACS-Actor-Token": "test-actor-secret"},
+    )
     client.post("/api/jules/prompt", json={"repo": "metarepo", "prompt": "x"})
 
     sid = "12345678-1234-1234-1234-1234567890ab"

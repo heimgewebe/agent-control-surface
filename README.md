@@ -134,17 +134,27 @@ Das ACS bietet eine Integration für den `wgx`-Leitstand (externes CLI-Tool), um
 - **`ACS_CORS_ALLOW_ORIGINS`** (Env): Komma-getrennte Liste erlaubter Origins für CORS.
   - Default: leer (kein CORS).
   - Beispiel für Leitstand + Local Dev: `http://localhost:5173,http://127.0.0.1:5173`
+  - Browser-Mutationen bleiben unabhängig von CORS strikt Same-Origin; Cross-Origin-Zugriff ist
+    nur für bestehende Read-Routen vorgesehen.
 - **`ACS_ENABLE_ROUTINES`** (Env): Aktiviert mutierende Ops-Endpunkte.
   - Default: `false`.
   - Setzen auf `true` aktiviert `/api/routine/preview` und `/api/routine/apply`.
   - **Sicherheitshinweis:** Nur aktivieren, wenn ACS in einem gesicherten Netz läuft oder hinter einem Auth-Proxy steht. Routinen führen Shell-Kommandos im Kontext des Users aus.
-- **`ACS_ROUTINES_SHARED_SECRET`** (Env): Shared Secret für Actor-Endpunkte.
-  - Erforderlich, wenn Routinen aktiviert sind.
-  - Authentifizierung erfolgt über zwei Pfade:
-    1. **Actor/API:** Header `X-ACS-Actor-Token: <secret>`.
-    2. **Web UI:** Automatischer CSRF-Schutz (Double-Submit Cookie) + Same-Origin Check.
-  - Das Secret dient als Hard-Gate: Wenn es nicht konfiguriert ist, bleiben Routinen deaktiviert (403).
+- **`ACS_MUTATION_SHARED_SECRET`** (Env): Shared Secret für Actor-Endpunkte.
+  - Alle `POST`-, `PUT`-, `PATCH`- und `DELETE`-Requests werden vor dem Routing geschützt.
+  - **Actor/API:** Header `X-ACS-Actor-Token: <secret>`.
+  - **Web UI:** Automatischer Double-Submit-CSRF-Schutz plus exakte Same-Origin- und
+    Fetch-Metadata-Prüfung. Doppelte, widersprüchliche oder fehlerhafte Evidenz wird abgelehnt.
+  - `ACS_ROUTINES_SHARED_SECRET` bleibt als Kompatibilitäts-Fallback erhalten. Für neue
+    Installationen sollte nur `ACS_MUTATION_SHARED_SECRET` gesetzt werden.
+  - Routinen benötigen weiterhin ein konfiguriertes Secret und `ACS_ENABLE_ROUTINES=true`.
   - **Empfehlung:** Ein langes, zufälliges Secret verwenden (z.B. via `openssl rand -hex 32`).
+- **`ACS_PUBLIC_ORIGIN`** (Env): Feste öffentliche Origin (z.B. `https://acs.example.org`) für
+  Browser-Mutationsprüfungen hinter einem Reverse Proxy. Der Wert darf keinen Pfad enthalten.
+
+Git-Commits und Publish-Jobs benötigen einen expliziten Datei-Scope (`paths`) oder den Scope des
+zuletzt über ACS angewendeten Patches. ACS verwendet literale Pfade, lehnt Escapes, Symlinks und
+secret-ähnliche Dateien ab, prüft den exakten Index-Delta und lässt sonstige Änderungen unangetastet.
 
 > **Wichtig:** Confirm-Tokens werden aktuell **in-memory** (pro Prozess) gespeichert. Bei einem Deployment mit mehreren Workern/Pods ist ein Token ungültig, wenn Preview und Apply auf unterschiedlichen Instanzen landen.
 
