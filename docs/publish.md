@@ -5,11 +5,14 @@ Dieses Dokument zeigt ein paar **Smoke-Curls** für die neue Publish-API.
 Logging ist standardmäßig deaktiviert. Aktivieren via `ACS_ACTION_LOG=1` (oder ein eigener Pfad mit `ACS_ACTION_LOG=/path/log.jsonl`).
 
 Hinweis: `repo` wird ausschließlich als Query-Parameter übergeben (z.B. `?repo=metarepo`).
+Mutierende Requests benötigen `X-ACS-Actor-Token` oder die vom Web-UI automatisch gesendete
+CSRF-/Same-Origin-Evidenz. Das folgende Beispiel setzt `ACS_MUTATION_SHARED_SECRET` voraus.
 
 ## Beispiel: Erfolg
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8099/api/git/publish?repo=metarepo" \
+  -H "X-ACS-Actor-Token: ${ACS_MUTATION_SHARED_SECRET}" \
   -H 'Content-Type: application/json' \
   -d '{
     "branch": "acs/metarepo-20250101-1200-abcd12",
@@ -18,9 +21,15 @@ curl -sS -X POST "http://127.0.0.1:8099/api/git/publish?repo=metarepo" \
     "pr_body": "Kurzbeschreibung der Änderungen",
     "base": "main",
     "draft": true,
-    "include_diffstat": true
+    "include_diffstat": true,
+    "paths": ["src/example.py", "tests/test_example.py"]
   }'
 ```
+
+`paths` kann entfallen, wenn unmittelbar zuvor ein Patch über ACS angewendet wurde und dessen
+Datei-Scope seitdem unverändert ist. Ohne expliziten oder gebundenen Scope verweigert ACS das
+Staging. Nicht zum Scope gehörende modifizierte, vorgemerkte oder unversionierte Dateien bleiben
+unverändert.
 
 Response (Job-Start, HTTP 202 Accepted):
 
@@ -90,6 +99,7 @@ Erfolgsantwort (gekürzt):
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8099/api/git/publish?repo=metarepo" \
+  -H "X-ACS-Actor-Token: ${ACS_MUTATION_SHARED_SECRET}" \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```

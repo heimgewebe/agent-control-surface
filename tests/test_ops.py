@@ -421,24 +421,44 @@ def test_routines_safety_gate(monkeypatch, mock_get_repo):
 
     # Default: disabled -> 403
     monkeypatch.delenv("ACS_ENABLE_ROUTINES", raising=False)
+    monkeypatch.setenv("ACS_MUTATION_SHARED_SECRET", "testsecret")
 
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
+    headers = {"X-ACS-Actor-Token": "testsecret"}
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "test"},
+        headers=headers,
+    )
     assert res.status_code == 403, res.text
     assert "disabled" in res.json()["detail"]
 
     # Payload must be valid to reach 403
-    res = client.post("/api/routine/apply", json={"repo": "metarepo", "id": "test", "confirm_token": "x", "preview_hash": "dummy"})
+    res = client.post(
+        "/api/routine/apply",
+        json={
+            "repo": "metarepo",
+            "id": "test",
+            "confirm_token": "x",
+            "preview_hash": "dummy",
+        },
+        headers=headers,
+    )
     assert res.status_code == 403, res.text
 
 def test_routines_fails_if_secret_missing(monkeypatch, mock_get_repo):
     """Test that routines fail with 403 if ACS_ROUTINES_SHARED_SECRET is not set."""
     client = TestClient(app)
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
+    monkeypatch.delenv("ACS_MUTATION_SHARED_SECRET", raising=False)
     monkeypatch.delenv("ACS_ROUTINES_SHARED_SECRET", raising=False)
 
-    res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "test"})
+    res = client.post(
+        "/api/routine/preview",
+        json={"repo": "metarepo", "id": "test"},
+        headers={"X-ACS-Actor-Token": "not-configured"},
+    )
     assert res.status_code == 403
-    assert "ACS_ROUTINES_SHARED_SECRET" in res.json()["detail"]
+    assert "authorization failed" in res.json()["detail"]
 
 def test_routines_safety_gate_enabled_with_mock_run(monkeypatch, mock_run_wgx, mock_get_repo):
     """Test that routine endpoints work when enabled and authenticated."""
@@ -576,7 +596,7 @@ def test_routines_safety_gate_secret(monkeypatch, mock_run_wgx, mock_get_repo):
     # 1. Missing both -> 403
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"})
     assert res.status_code == 403
-    assert "authentication" in res.json()["detail"]
+    assert "authorization" in res.json()["detail"]
 
     # 2. Wrong Actor-Token -> 403
     res = client.post("/api/routine/preview", json={"repo": "metarepo", "id": "git.repair.remote-head"}, headers={"X-ACS-Actor-Token": "wrong"})
@@ -593,7 +613,7 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
     monkeypatch.setenv("ACS_ENABLE_ROUTINES", "true")
     monkeypatch.setenv("ACS_ROUTINES_SHARED_SECRET", "supersecret")
 
-    csrf_token = "test-csrf-token"
+    csrf_token = "a" * 32
     client.cookies.set("acs_csrf", csrf_token)
 
     # 1. Valid CSRF but missing Origin/Referer -> 403
@@ -603,7 +623,7 @@ def test_routines_ui_auth_path(monkeypatch, mock_run_wgx, mock_get_repo):
         headers={"X-ACS-CSRF": csrf_token}
     )
     assert res.status_code == 403
-    assert "Origin mismatch" in res.json()["detail"]
+    assert "Same-origin evidence required" in res.json()["detail"]
 
     # 2. Valid CSRF and correct Origin -> 200
     res = client.post(

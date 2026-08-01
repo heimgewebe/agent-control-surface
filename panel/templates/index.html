@@ -270,8 +270,35 @@
     </section>
 
     <script>
+      async function acsFetch(input, init = {}) {
+        const method = String(
+          init.method || (input instanceof Request ? input.method : "GET"),
+        ).toUpperCase();
+        const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+        if (!mutating) return window.fetch(input, init);
+
+        const target = new URL(
+          typeof input === "string" ? input : input.url,
+          window.location.href,
+        );
+        if (target.origin !== window.location.origin) {
+          throw new Error("Cross-origin mutation requests are not allowed.");
+        }
+        const csrf = getCookie("acs_csrf") || "";
+        if (!/^[0-9a-f]{32}$/.test(csrf)) {
+          throw new Error("Mutation protection cookie is missing or malformed; reload the page.");
+        }
+        const headers = new Headers(init.headers || {});
+        headers.set("X-ACS-CSRF", csrf);
+        return window.fetch(input, {
+          ...init,
+          headers,
+          credentials: "same-origin",
+        });
+      }
+
       async function api(path, body) {
-        const res = await fetch(path, {
+        const res = await acsFetch(path, {
           method: body ? "POST" : "GET",
           headers: body ? { "Content-Type": "application/json" } : undefined,
           body: body ? JSON.stringify(body) : undefined,
@@ -408,7 +435,7 @@
         }
         pre.textContent = "…";
         try {
-          const res = await fetch("/api/jules/prompt", {
+          const res = await acsFetch("/api/jules/prompt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ repo: repoValue, prompt: promptRaw }),
@@ -458,7 +485,7 @@
         setMemoryStatus("");
         pre.textContent = "…";
         try {
-          const res = await fetch(
+          const res = await acsFetch(
             `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
           );
           const txt = await res.text();
@@ -507,7 +534,7 @@
         };
         setMemoryStatus("");
         try {
-          const res = await fetch(
+          const res = await acsFetch(
             `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
             {
               method: "PATCH",
@@ -537,7 +564,7 @@
         if (!window.confirm("Session im Archiv als gelöscht markieren?")) return;
         setMemoryStatus("");
         try {
-          const res = await fetch(
+          const res = await acsFetch(
             `/api/memory/sessions/${encodeURIComponent(id)}?agent=jules&repo=${encodeURIComponent(repoValue)}`,
             { method: "DELETE" },
           );
@@ -561,7 +588,7 @@
           : `agent=jules&include_deleted=${incDel}`;
         pre.textContent = "…";
         try {
-          const res = await fetch(`/api/memory/sessions?${q}`);
+          const res = await acsFetch(`/api/memory/sessions?${q}`);
           const txt = await res.text();
           if (!res.ok) {
             pre.textContent = formatErrorMessage(txt);
@@ -632,7 +659,7 @@
         const body = { repo: repoValue, patch, three_way: threeWay };
         if (sessionId) body.session_id = sessionId;
         try {
-          const res = await fetch("/api/patch/apply.json", {
+          const res = await acsFetch("/api/patch/apply.json", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -781,7 +808,7 @@
         document.getElementById("publishOut").textContent = "";
         document.getElementById("publishDownload").disabled = true;
         try {
-          const res = await fetch(`/api/git/publish?repo=${encodeURIComponent(repoValue)}`, {
+          const res = await acsFetch(`/api/git/publish?repo=${encodeURIComponent(repoValue)}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -834,7 +861,7 @@
           options.body = JSON.stringify(body);
         }
         try {
-          const res = await fetch(`${path}?repo=${encodeURIComponent(repoValue)}`, options);
+          const res = await acsFetch(`${path}?repo=${encodeURIComponent(repoValue)}`, options);
           const errorText = await res.text();
           let data = null;
           if (errorText) {
@@ -891,7 +918,7 @@
         publishPoll = setInterval(async () => {
           if (!publishJobId) return;
           try {
-            const res = await fetch(`/api/jobs/${publishJobId}`);
+            const res = await acsFetch(`/api/jobs/${publishJobId}`);
             const errorText = await res.text();
             let data = null;
             if (errorText) {
@@ -1110,7 +1137,7 @@
         document.getElementById("auditJson").textContent = "";
 
         try {
-          const res = await fetch(`/api/audit/git?repo=${encodeURIComponent(repoValue)}`, {
+          const res = await acsFetch(`/api/audit/git?repo=${encodeURIComponent(repoValue)}`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1131,7 +1158,7 @@
         auditPoll = setInterval(async () => {
           if (!auditJobId) return;
           try {
-            const res = await fetch(`/api/jobs/${auditJobId}`);
+            const res = await acsFetch(`/api/jobs/${auditJobId}`);
             if (!res.ok) throw new Error("Job status fetch failed");
             const data = await res.json();
 
@@ -1258,11 +1285,10 @@
         document.getElementById("routineApplyStatus").textContent = "";
 
         try {
-          const res = await fetch("/api/routine/preview", {
+          const res = await acsFetch("/api/routine/preview", {
             method: "POST",
             headers: {
-              "Content-Type": "application/json",
-              "X-ACS-CSRF": getCookie("acs_csrf") || ""
+              "Content-Type": "application/json"
             },
             credentials: "same-origin",
             body: JSON.stringify({ repo: repoValue, id: routineId }),
@@ -1290,11 +1316,10 @@
         document.getElementById("routineApplyStatus").textContent = "Applying...";
 
         try {
-          const res = await fetch("/api/routine/apply", {
+          const res = await acsFetch("/api/routine/apply", {
             method: "POST",
             headers: {
-              "Content-Type": "application/json",
-              "X-ACS-CSRF": getCookie("acs_csrf") || ""
+              "Content-Type": "application/json"
             },
             credentials: "same-origin",
             body: JSON.stringify({

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import secrets
+import shlex
 import threading
 import time
 import uuid
@@ -21,6 +21,14 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+from .git_staging import (
+    StagingError,
+    canonicalize_repo_paths,
+    changed_paths,
+    commit_intended_paths,
+    paths_signature,
+    staged_paths,
+)
 from .logging import log_action, redact_secrets
 from .ops import (
     get_latest_audit_artifact,
@@ -30,6 +38,13 @@ from .ops import (
 )
 from .repos import Repo, allowed_repos, repo_by_key
 from .runner import assert_not_main_branch, run
+from .security import (
+    CSRF_TOKEN_RE,
+    MUTATING_HTTP_METHODS,
+    MutationAuthorizationError,
+    authorize_mutation_request,
+    mutation_shared_secret,
+)
 from .session_archive import (
     display_status,
     list_session_records,
@@ -80,6 +95,16 @@ if cors_origins:
         allow_headers=["*"],
     )
 
+
+@app.middleware("http")
+async def mutation_authorization_boundary(request: Request, call_next: Any) -> Response:
+    if request.method.upper() in MUTATING_HTTP_METHODS:
+        try:
+            authorize_mutation_request(request)
+        except MutationAuthorizationError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=403)
+    return await call_next(request)
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=2)
@@ -92,7 +117,7 @@ MAX_JOB_LOG_LINES = 1000
 MAX_LOG_LINE_CHARS = 4000
 # Backwards-compatible alias for older imports.
 MAX_STDOUT_CHARS = MAX_OUTPUT_CHARS
-LAST_APPLY_CONTEXT: dict[str, dict[str, str]] = {}
+LAST_APPLY_CONTEXT: dict[str, dict[str, Any]] = {}
 BRANCH_HEAD_PREFIX = "# branch.head "
 BRANCH_OID_PREFIX = "# branch.oid "
 
@@ -147,6 +172,7 @@ class GitBranchReq(BaseModel):
 class GitCommitReq(BaseModel):
     repo: str
     message: str
+    paths: list[str] | None = None
 
 
 class GitPushReq(BaseModel):
@@ -181,6 +207,7 @@ class PublishOptions(BaseModel):
     base: str = "main"
     draft: bool = True
     include_diffstat: bool = True
+    paths: list[str] | None = None
 
 
 class PublishReq(PublishOptions):
@@ -222,15 +249,14 @@ JobState.model_rebuild()
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
     response = TEMPLATES.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "repos": allowed_repos(),
-        },
+        request=request,
+        name="index.html",
+        context={"repos": allowed_repos()},
     )
     # CSRF protection for UI requests: acs_csrf cookie is checked against X-ACS-CSRF header.
     # HttpOnly=False is required for the UI to read the cookie and send the header.
-    if not request.cookies.get("acs_csrf"):
+    csrf_cookie = request.cookies.get("acs_csrf", "")
+    if CSRF_TOKEN_RE.fullmatch(csrf_cookie) is None:
         response.set_cookie(
             key="acs_csrf",
             value=secrets.token_hex(16),
@@ -447,14 +473,12 @@ def api_git_diff(repo: str = Query(...)) -> str:
 
 
 @app.post("/api/git/commit", response_class=PlainTextResponse)
-def api_git_commit(req: GitCommitReq) -> str:
-    target = get_repo(req.repo)
-    assert_branch_guard(target.path)
-    if not req.message.strip():
-        raise HTTPException(status_code=400, detail="Commit message required")
-    run(["git", "add", "-A"], cwd=target.path, timeout=60)
-    out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
-    return combine_output(out)
+def api_git_commit(req: GitCommitReq) -> Response:
+    result, status_code = commit_action(req)
+    if result.ok:
+        output = combine_output(result).strip() or result.message or "Commit created."
+        return PlainTextResponse(output, status_code=status_code)
+    return build_action_response(result, "text", status_code=status_code)
 
 
 @app.post("/api/git/commit.json", response_class=JSONResponse)
@@ -622,7 +646,7 @@ def api_audit_git_latest(repo: str = Query(...)) -> JSONResponse:
     return JSONResponse(result.model_dump())
 
 
-def check_routines_enabled(request: Request) -> None:
+def check_routines_enabled() -> None:
     enabled = os.getenv("ACS_ENABLE_ROUTINES", "false").lower() in ("true", "1", "yes", "on")
     if not enabled:
         raise HTTPException(
@@ -630,51 +654,19 @@ def check_routines_enabled(request: Request) -> None:
             detail="Routines are disabled. Set ACS_ENABLE_ROUTINES=true to enable."
         )
 
-    secret = os.getenv("ACS_ROUTINES_SHARED_SECRET", "").strip()
-    if not secret:
+    if mutation_shared_secret() is None:
         raise HTTPException(
             status_code=403,
-            detail="ACS_ROUTINES_SHARED_SECRET is not configured. For security, routines require a secret when enabled."
+            detail=(
+                "ACS_MUTATION_SHARED_SECRET (or legacy ACS_ROUTINES_SHARED_SECRET) "
+                "must be configured when routines are enabled."
+            ),
         )
-
-    # Path A: Actor Path (Shared Secret)
-    actor_token = request.headers.get("X-ACS-Actor-Token", "").strip()
-    if actor_token:
-        if not secrets.compare_digest(actor_token, secret):
-            raise HTTPException(status_code=403, detail="Invalid X-ACS-Actor-Token header.")
-        return
-
-    # Path B: UI Path (CSRF + Same-Origin)
-    csrf_header = request.headers.get("X-ACS-CSRF", "").strip()
-    csrf_cookie = request.cookies.get("acs_csrf", "").strip()
-
-    if not csrf_header or not csrf_cookie or not secrets.compare_digest(csrf_header, csrf_cookie):
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid or missing authentication (X-ACS-Actor-Token or X-ACS-CSRF)."
-        )
-
-    # Strict same-origin check for UI path
-    origin = request.headers.get("Origin")
-    referer = request.headers.get("Referer")
-
-    # Trust ACS_PUBLIC_ORIGIN if set (useful behind reverse proxies)
-    public_origin = os.getenv("ACS_PUBLIC_ORIGIN", "").strip().rstrip("/")
-    base_url = public_origin or str(request.base_url).rstrip("/")
-
-    valid_origin = False
-    if origin and origin.rstrip("/") == base_url:
-        valid_origin = True
-    elif referer and referer.startswith(base_url):
-        valid_origin = True
-
-    if not valid_origin:
-        raise HTTPException(status_code=403, detail="Origin mismatch (UI access requires same-origin).")
 
 
 @app.post("/api/routine/preview", response_class=JSONResponse)
-def api_routine_preview(req: RoutinePreviewReq, request: Request) -> JSONResponse:
-    check_routines_enabled(request)
+def api_routine_preview(req: RoutinePreviewReq) -> JSONResponse:
+    check_routines_enabled()
     target = get_repo(req.repo)
     try:
         preview, token, preview_hash = run_wgx_routine_preview(target.key, target.path, req.id)
@@ -684,8 +676,8 @@ def api_routine_preview(req: RoutinePreviewReq, request: Request) -> JSONRespons
 
 
 @app.post("/api/routine/apply", response_class=JSONResponse)
-def api_routine_apply(req: RoutineApplyReq, request: Request) -> JSONResponse:
-    check_routines_enabled(request)
+def api_routine_apply(req: RoutineApplyReq) -> JSONResponse:
+    check_routines_enabled()
     target = get_repo(req.repo)
     try:
         result = run_wgx_routine_apply(target.key, target.path, req.id, req.confirm_token, req.preview_hash)
@@ -772,14 +764,16 @@ def extract_patch_files(patch: str) -> set[str]:
     for line in patch.splitlines():
         if not line.startswith("diff --git "):
             continue
-        marker = " b/"
-        if marker not in line:
+        try:
+            fields = shlex.split(line, posix=True)
+        except ValueError:
             continue
-        _, tail = line.split(marker, 1)
-        path = tail.strip()
-        if not path:
+        if len(fields) != 4 or fields[:2] != ["diff", "--git"]:
             continue
-        files.add(path)
+        for field, prefix in zip(fields[2:], ("a/", "b/"), strict=True):
+            if not field.startswith(prefix) or field == prefix:
+                continue
+            files.add(field[len(prefix) :])
     return files
 
 
@@ -865,13 +859,6 @@ def check_branch_guard(path: Path) -> str | None:
     except RuntimeError as exc:
         return str(exc)
     return None
-
-
-def git_diff_signature(path: Path) -> str:
-    unstaged = run(["git", "diff", "--no-ext-diff"], cwd=path, timeout=60).stdout
-    staged = run(["git", "diff", "--cached", "--no-ext-diff"], cwd=path, timeout=60).stdout
-    signature = hashlib.sha256((unstaged + staged).encode("utf-8")).hexdigest()
-    return signature
 
 
 def git_status_porcelain(path: Path) -> list[str]:
@@ -1128,16 +1115,17 @@ def git_remote_repair_stage_c(target: Repo, correlation_id: str) -> ActionResult
     return result
 
 
-def get_apply_context(repo: str) -> dict[str, str]:
+def get_apply_context(repo: str) -> dict[str, Any]:
     with JOB_LOCK:
         return dict(LAST_APPLY_CONTEXT.get(repo, {}))
 
 
-def set_apply_context(repo: str, signature: str, session_id: str) -> None:
+def set_apply_context(repo: str, signature: str, session_id: str, files: list[str]) -> None:
     with JOB_LOCK:
         LAST_APPLY_CONTEXT[repo] = {
             "signature": signature,
             "session_id": session_id,
+            "files": list(files),
         }
 
 
@@ -1191,6 +1179,26 @@ def normalize_patch_output(output: str) -> str:
     return ""
 
 
+def resolve_commit_scope(target: Repo, requested_paths: list[str] | None) -> tuple[str, ...]:
+    context = get_apply_context(target.key)
+    context_paths = context.get("files")
+    using_context = requested_paths is None
+    selected = context_paths if using_context else requested_paths
+    if not isinstance(selected, list) or not all(isinstance(path, str) for path in selected):
+        raise StagingError(
+            "An explicit path scope is required when no patch operation context is available."
+        )
+    canonical = canonicalize_repo_paths(target.path, selected)
+    if using_context:
+        expected_signature = context.get("signature")
+        if not isinstance(expected_signature, str) or not secrets.compare_digest(
+            paths_signature(target.path, canonical),
+            expected_signature,
+        ):
+            raise StagingError("The patch operation scope changed after apply.")
+    return canonical
+
+
 def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
     correlation_id = new_correlation_id()
     start = time.monotonic()
@@ -1240,7 +1248,28 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
         log_action_result(result)
         return result, 400
     try:
-        before_diff = git_diff_signature(target.path)
+        files = list(
+            canonicalize_repo_paths(
+                target.path,
+                files,
+                reject_secret_like=False,
+            )
+        )
+        if changed_paths(target.path, files):
+            result = build_action_result(
+                ok=False,
+                action="patch.apply",
+                repo=target.key,
+                correlation_id=correlation_id,
+                message="Patch targets already contain changes; refusing to mix operations.",
+                error_kind="unsafe_staging_scope",
+                code=1,
+                files=files,
+                repo_path=target.path,
+            )
+            log_action_result(result)
+            return result, 409
+        before_diff = paths_signature(target.path, files)
         check_cmd = ["git", "apply", "--check"]
         if req.three_way:
             check_cmd.append("--3way")
@@ -1283,7 +1312,34 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
             )
             log_action_result(result)
             return result, 409
-        after_diff = git_diff_signature(target.path)
+        # `git apply --3way` may update the index. Return operation-owned paths to
+        # the worktree so the later explicit staging boundary remains authoritative.
+        staged_by_apply = staged_paths(target.path) & set(files)
+        if staged_by_apply:
+            unstage = run(
+                ["git", "--literal-pathspecs", "reset", "--quiet", "--", *files],
+                cwd=target.path,
+                timeout=30,
+            )
+            if unstage.code != 0 or staged_paths(target.path) & set(files):
+                raise StagingError("Unable to normalize the post-apply index state.")
+        if changed_paths(target.path, files) != set(files):
+            raise StagingError("Applied changes did not match the declared patch path set.")
+        after_diff = paths_signature(target.path, files)
+    except StagingError as exc:
+        result = build_action_result(
+            ok=False,
+            action="patch.apply",
+            repo=target.key,
+            correlation_id=correlation_id,
+            message=str(exc),
+            error_kind="unsafe_staging_scope",
+            code=1,
+            files=files or None,
+            repo_path=target.path,
+        )
+        log_action_result(result)
+        return result, 409
     except Exception as exc:
         result = build_action_result(
             ok=False,
@@ -1315,7 +1371,7 @@ def apply_patch_action(req: ApplyPatchReq) -> tuple[ActionResult, int]:
     )
     result.duration_ms = int((time.monotonic() - start) * 1000)
     log_action_result(result)
-    set_apply_context(target.key, after_diff, req.session_id or "")
+    set_apply_context(target.key, after_diff, req.session_id or "", files)
     sid = (req.session_id or "").strip()
     if sid and changed:
         mark_session_applied("jules", sid, target.key)
@@ -1366,52 +1422,23 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         )
         log_action_result(result)
         return result, 400
-    status_lines = git_status_porcelain(target.path)
-    if not status_lines:
+    try:
+        files = resolve_commit_scope(target, req.paths)
+        committed = commit_intended_paths(target.path, req.message, files)
+    except StagingError as exc:
         result = build_action_result(
             ok=False,
             action="git.commit",
             repo=target.key,
             correlation_id=correlation_id,
-            message="Nothing to commit",
-            error_kind="nothing_to_commit",
             code=1,
+            error_kind="unsafe_staging_scope",
+            message=str(exc),
             repo_path=target.path,
         )
         log_action_result(result)
         return result, 409
-    add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
-    if add.code != 0:
-        result = build_action_result(
-            ok=False,
-            action="git.commit",
-            repo=target.key,
-            correlation_id=correlation_id,
-            stdout=add.stdout,
-            stderr=add.stderr,
-            code=add.code,
-            error_kind="git_failed",
-            message=combine_output(add).strip(),
-            repo_path=target.path,
-        )
-        log_action_result(result)
-        return result, 500
-    staged = run(["git", "diff", "--cached", "--name-only"], cwd=target.path, timeout=30)
-    files = [line.strip() for line in staged.stdout.splitlines() if line.strip()]
-    if not files:
-        result = build_action_result(
-            ok=False,
-            action="git.commit",
-            repo=target.key,
-            correlation_id=correlation_id,
-            message="Nothing to commit",
-            error_kind="nothing_to_commit",
-            code=1,
-            repo_path=target.path,
-        )
-        log_action_result(result)
-        return result, 409
-    out = run(["git", "commit", "-m", req.message], cwd=target.path, timeout=60)
+    out = committed.command_result
     ok = out.code == 0
     error_kind = None if ok else "git_failed"
     message = "Commit created." if ok else combine_output(out).strip()
@@ -1428,7 +1455,7 @@ def commit_action(req: GitCommitReq) -> tuple[ActionResult, int]:
         error_kind=error_kind,
         message=message,
         changed=ok,
-        files=files,
+        files=list(files),
         repo_path=target.path,
     )
     result.duration_ms = int((time.monotonic() - start) * 1000)
@@ -1834,72 +1861,42 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
         return False
     status_lines = git_status_porcelain(target.path)
     if status_lines:
-        signature = git_diff_signature(target.path)
-        expected_signature = get_apply_context(target.key).get("signature")
-        if not expected_signature:
+        commit_message = (req.commit_message or "").strip() or build_default_commit_message(
+            target.key
+        )
+        try:
+            commit_scope = resolve_commit_scope(target, req.paths)
+            committed = commit_intended_paths(target.path, commit_message, commit_scope)
+        except StagingError as exc:
             result = build_action_result(
                 ok=False,
                 action="git.status",
                 repo=target.key,
                 correlation_id=correlation_id,
-                message=(
-                    "Working tree has changes, but no apply context is available. "
-                    "Please re-apply the patch via ACS or commit manually."
-                ),
-                error_kind="unexpected_changes_no_context",
+                message=str(exc),
+                error_kind="unsafe_staging_scope",
                 code=1,
                 files=get_status_files(status_lines),
                 repo_path=target.path,
             )
             record_job_result(job_id, result)
             return False
-        if signature != expected_signature:
-            result = build_action_result(
-                ok=False,
-                action="git.status",
-                repo=target.key,
-                correlation_id=correlation_id,
-                message="Working tree has unexpected changes. Apply or commit first.",
-                error_kind="git_failed",
-                code=1,
-                files=get_status_files(status_lines),
-                repo_path=target.path,
-            )
-            record_job_result(job_id, result)
-            return False
-        commit_message = (req.commit_message or "").strip() or build_default_commit_message(target.key)
-        add = run(["git", "add", "-A"], cwd=target.path, timeout=60)
+        add = committed.stage_result.command_result
         add_result = build_action_result(
-            ok=add.code == 0,
+            ok=True,
             action="git.add",
             repo=target.key,
             correlation_id=correlation_id,
             stdout=add.stdout,
             stderr=add.stderr,
             code=add.code,
-            error_kind=None if add.code == 0 else "git_failed",
-            message="Staged changes." if add.code == 0 else combine_output(add).strip(),
+            error_kind=None,
+            message="Staged the explicit operation path scope.",
+            files=list(committed.paths),
             repo_path=target.path,
         )
         record_job_result(job_id, add_result)
-        if add.code != 0:
-            return False
-        staged = run(["git", "diff", "--cached", "--name-only"], cwd=target.path, timeout=30)
-        staged_files = [line.strip() for line in staged.stdout.splitlines() if line.strip()]
-        if not staged_files:
-            result = build_action_result(
-                ok=False,
-                action="git.commit",
-                repo=target.key,
-                correlation_id=correlation_id,
-                message="Nothing to commit",
-                error_kind="nothing_to_commit",
-                code=1,
-                repo_path=target.path,
-            )
-            record_job_result(job_id, result)
-            return False
-        commit = run(["git", "commit", "-m", commit_message], cwd=target.path, timeout=60)
+        commit = committed.command_result
         commit_ok = commit.code == 0
         commit_result = build_action_result(
             ok=commit_ok,
@@ -1912,7 +1909,7 @@ def execute_publish(job_id: str, correlation_id: str, repo: str, req: PublishOpt
             error_kind=None if commit_ok else "git_failed",
             message="Commit created." if commit_ok else combine_output(commit).strip(),
             changed=commit_ok,
-            files=staged_files,
+            files=list(committed.paths),
             repo_path=target.path,
         )
         record_job_result(job_id, commit_result)

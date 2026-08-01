@@ -87,6 +87,15 @@ def test_redact_secrets(monkeypatch):
     assert "key=[redacted]" in redacted
 
 
+def test_redact_mutation_actor_secret(monkeypatch):
+    monkeypatch.setenv("ACS_MUTATION_SHARED_SECRET", "mutation-secret-value")
+    _get_sensitive_env_values.cache_clear()
+
+    redacted = redact_secrets("actor token mutation-secret-value must not leak")
+
+    assert redacted == "actor token [redacted] must not leak"
+
+
 def test_redact_secrets_substring_overlap(monkeypatch):
     # Test that longer secrets are redacted before shorter ones to prevent partial leaks
     # GH_TOKEN="abc"
